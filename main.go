@@ -30,7 +30,7 @@ func (a *Atomstr) startWorkers(work string) {
 		case "metadata":
 			go a.processFeedMetadata(ch, &wg)
 		default:
-			go processFeedUrl(ch, &wg)
+			go a.processFeedUrl(ch, &wg)
 		}
 	}
 
@@ -51,6 +51,7 @@ func main() {
 
 	feedNew := flag.String("a", "", "Add a new URL to scrape")
 	feedDelete := flag.String("d", "", "Remove a feed from db")
+	pruneOlderThan := flag.String("p", "", "Prune published posts older than specified duration (e.g., '30d', '7d', '168h')")
 	flag.Bool("l", false, "List all feeds with npubs")
 	flag.Bool("v", false, "Shows version")
 	flag.Parse()
@@ -63,6 +64,17 @@ func main() {
 		a.listFeeds()
 	} else if flagset["d"] {
 		a.deleteSource(*feedDelete)
+	} else if flagset["p"] {
+		duration, err := parseDurationWithDays(*pruneOlderThan)
+		if err != nil {
+			log.Printf("[ERROR] Invalid duration format '%s': %v", *pruneOlderThan, err)
+			log.Println("[INFO] Use formats like: 30d, 7d, 168h, 720h")
+			return
+		}
+		_, err = a.dbPrunePublishedPosts(duration)
+		if err != nil {
+			log.Printf("[ERROR] Pruning failed: %v", err)
+		}
 	} else if flagset["v"] {
 		log.Println("[INFO] atomstr version ", atomstrversion)
 	} else {
@@ -93,7 +105,7 @@ func main() {
 		}()
 		sig := <-cancelChan
 
-		log.Println("[DEBUG] Caught signal %v", sig)
+		log.Printf("[DEBUG] Caught signal %v", sig)
 		metadataTicker.Stop()
 		updateTicker.Stop()
 		log.Println("[INFO] Closing DB")

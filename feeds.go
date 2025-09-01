@@ -38,37 +38,39 @@ func (a *Atomstr) dbGetAllFeeds() *[]feedStruct {
 }
 
 // func processFeedUrl(ch chan string, wg *sync.WaitGroup, feedItem *feedStruct) {
-func processFeedUrl(ch chan feedStruct, wg *sync.WaitGroup) {
+func (a *Atomstr) processFeedUrl(ch chan feedStruct, wg *sync.WaitGroup) {
 	for feedItem := range ch {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // fetch feeds with 10s timeout
-		defer cancel()
-		fp := gofeed.NewParser()
-		feed, err := fp.ParseURLWithContext(feedItem.Url, ctx)
-		if err != nil {
-			log.Println("[ERROR] Can't update feed", feedItem.Url)
-		} else {
-			log.Println("[DEBUG] Updating feed ", feedItem.Url)
-			//fmt.Println(feed)
-			feedItem.Title = feed.Title
-			feedItem.Description = feed.Description
-			feedItem.Link = feed.Link
-			if feed.Image != nil {
-				feedItem.Image = feed.Image.URL
+		func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // fetch feeds with 10s timeout
+			defer cancel()
+			fp := gofeed.NewParser()
+			feed, err := fp.ParseURLWithContext(feedItem.Url, ctx)
+			if err != nil {
+				log.Println("[ERROR] Can't update feed", feedItem.Url)
 			} else {
-				feedItem.Image = defaultFeedImage
-			}
-			//feedItem.Image = feed.Image
+				log.Println("[DEBUG] Updating feed ", feedItem.Url)
+				//fmt.Println(feed)
+				feedItem.Title = feed.Title
+				feedItem.Description = feed.Description
+				feedItem.Link = feed.Link
+				if feed.Image != nil {
+					feedItem.Image = feed.Image.URL
+				} else {
+					feedItem.Image = defaultFeedImage
+				}
+				//feedItem.Image = feed.Image
 
-			for i := range feed.Items {
-				processFeedPost(feedItem, feed.Items[i], fetchInterval)
+				for i := range feed.Items {
+					a.processFeedPost(feedItem, feed.Items[i])
+				}
+				log.Println("[DEBUG] Finished updating feed ", feedItem.Url)
 			}
-			log.Println("[DEBUG] Finished updating feed ", feedItem.Url)
-		}
+		}()
 	}
 	wg.Done()
 }
 
-func processFeedPost(feedItem feedStruct, feedPost *gofeed.Item, interval time.Duration) {
+func (a *Atomstr) processFeedPost(feedItem feedStruct, feedPost *gofeed.Item) {
 	p := bluemonday.StrictPolicy() // initialize html sanitizer
 	p.AllowImages()
 	p.AllowStandardURLs()
@@ -76,17 +78,13 @@ func processFeedPost(feedItem feedStruct, feedPost *gofeed.Item, interval time.D
 
 	//fmt.Println(feedPost.PublishedParsed)
 
-	// ditch it, if no timestamp
-	if feedPost.PublishedParsed == nil {
-		log.Println("[WARN] Can't read PublishedParsed date of post from", feedItem.Url)
+	// Check if we should publish this post (age, duplicates, etc.)
+	shouldPublish, reason := a.shouldPublishPost(feedItem, feedPost)
+	if !shouldPublish {
+		log.Println("[DEBUG] Skipping post from", feedItem.Url+":", reason)
 		return
 	}
-	// if time right, then push
-	if !checkMaxAge(feedPost.PublishedParsed, interval) {
-		log.Println("[DEBUG] Post is too old", feedItem.Url, time.Since(*feedPost.PublishedParsed), interval)
-		return
-	}
-	
+
 	var feedText string
 	var re = regexp.MustCompile(`nitter|telegram`)
 	if re.MatchString(feedPost.Link) { // fix duplicated title in nitter/telegram
@@ -134,12 +132,16 @@ func processFeedPost(feedItem feedStruct, feedPost *gofeed.Item, interval time.D
 
 	ev.Sign(feedItem.Sec)
 
-	if noPub == false {
+	if !noPub {
 		nostrPostItem(ev)
+		// Record that we published this post
+		a.dbRecordPublishedPost(feedPost.Link, feedItem.Url, ev.ID)
 	} else {
 		log.Println("[DEBUG] not publishing post", ev)
+		// Still record it even if not actually publishing (for testing)
+		a.dbRecordPublishedPost(feedPost.Link, feedItem.Url, ev.ID)
 	}
-	
+
 }
 
 func (a *Atomstr) dbWriteFeed(feedItem *feedStruct) bool {
@@ -164,6 +166,81 @@ func (a *Atomstr) dbGetFeed(feedUrl string) *feedStruct {
 		log.Println("[INFO] Feed not found in DB")
 	}
 	return &feedItem
+}
+
+func (a *Atomstr) dbCheckPublishedPost(postUrl string) bool {
+	sqlStatement := `SELECT COUNT(*) FROM published_posts WHERE url=?;`
+	row := a.db.QueryRow(sqlStatement, postUrl)
+
+	var count int
+	err := row.Scan(&count)
+	if err != nil {
+		log.Println("[ERROR] Failed to check published post:", err)
+		return false
+	}
+	return count > 0
+}
+
+func (a *Atomstr) dbRecordPublishedPost(postUrl, feedUrl, nostrEventId string) bool {
+	sqlStatement := `INSERT INTO published_posts (url, feed_url, published_at, nostr_event_id) VALUES (?, ?, ?, ?);`
+	_, err := a.db.Exec(sqlStatement, postUrl, feedUrl, time.Now().Unix(), nostrEventId)
+	if err != nil {
+		log.Println("[ERROR] Failed to record published post:", err)
+		return false
+	}
+	log.Println("[DEBUG] Recorded published post:", postUrl, "with event ID:", nostrEventId)
+	return true
+}
+
+func (a *Atomstr) dbGetPublishedPostByEventId(nostrEventId string) (string, bool) {
+	sqlStatement := `SELECT url FROM published_posts WHERE nostr_event_id=?;`
+	row := a.db.QueryRow(sqlStatement, nostrEventId)
+
+	var url string
+	err := row.Scan(&url)
+	if err != nil {
+		return "", false
+	}
+	return url, true
+}
+
+func (a *Atomstr) dbPrunePublishedPosts(olderThan time.Duration) (int64, error) {
+	cutoffTime := time.Now().Add(-olderThan).Unix()
+	sqlStatement := `DELETE FROM published_posts WHERE published_at < ?;`
+	result, err := a.db.Exec(sqlStatement, cutoffTime)
+	if err != nil {
+		log.Println("[ERROR] Failed to prune published posts:", err)
+		return 0, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		log.Println("[ERROR] Failed to get rows affected:", err)
+		return 0, err
+	}
+
+	log.Printf("[INFO] Pruned %d published posts older than %v", rowsAffected, olderThan)
+	return rowsAffected, nil
+}
+
+func (a *Atomstr) shouldPublishPost(feedItem feedStruct, feedPost *gofeed.Item) (bool, string) {
+	// Check if post has a valid timestamp
+	if feedPost.PublishedParsed == nil {
+		return false, "Can't read PublishedParsed date"
+	}
+
+	// Check if post is too old
+	if !checkMaxAge(feedPost.PublishedParsed, maxPostAge) {
+		timeSince := time.Since(*feedPost.PublishedParsed)
+		return false, fmt.Sprintf("Post is too old: %v (max age: %v)", timeSince, maxPostAge)
+	}
+
+	// Check if already published
+	if a.dbCheckPublishedPost(feedPost.Link) {
+		return false, "Post already published"
+	}
+
+	return true, "Ready to publish"
 }
 
 func checkValidFeedSource(feedUrl string) (*feedStruct, error) {
@@ -215,13 +292,13 @@ func (a *Atomstr) addSource(feedUrl string) (*feedStruct, error) {
 	//fmt.Println(feedItem)
 
 	a.dbWriteFeed(feedItem)
-	if noPub == false {
+	if !noPub {
 		nostrUpdateFeedMetadata(feedItem)
 	}
 
 	log.Println("[INFO] Parsing post history of new feed")
 	for i := range feedItem.Posts {
-		processFeedPost(*feedItem, feedItem.Posts[i], historyInterval)
+		a.processFeedPost(*feedItem, feedItem.Posts[i])
 	}
 	log.Println("[INFO] Finished parsing post history of new feed")
 

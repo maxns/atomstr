@@ -35,17 +35,13 @@ func convertTimeString(itemTime string) *time.Time {
 
 func checkMaxAge(itemTime *time.Time, maxAgeHours time.Duration) bool {
 	maxAge := time.Now().UTC().Add(-maxAgeHours) // make sure everything is UTC!
-
-	if itemTime.UTC().After(maxAge) {
-		return true
-	}
-	return false
+	return itemTime.UTC().After(maxAge)
 }
 
 func dbInit() *sql.DB {
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
-		log.Fatal("[FATAL] open db: %v", err)
+		log.Fatalf("[FATAL] open db: %v", err)
 	}
 	log.Printf("[INFO] database opened at %s", dbPath)
 	//defer db.Close()
@@ -66,6 +62,22 @@ func generateKeysForUrl(feedUrl string) *feedStruct {
 	feedElem.Pub, _ = nostr.GetPublicKey(feedElem.Sec)
 
 	return &feedElem
+}
+
+func parseDurationWithDays(s string) (time.Duration, error) {
+	// Check if string ends with 'd' for days
+	if len(s) > 1 && s[len(s)-1] == 'd' {
+		// Parse the number part
+		dayStr := s[:len(s)-1]
+		days, err := time.ParseDuration(dayStr + "h")
+		if err != nil {
+			return 0, err
+		}
+		// Convert to days (multiply by 24)
+		return days * 24, nil
+	}
+	// Use standard parsing for other formats
+	return time.ParseDuration(s)
 }
 
 func logger() {
