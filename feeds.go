@@ -82,58 +82,64 @@ func processFeedPost(feedItem feedStruct, feedPost *gofeed.Item, interval time.D
 		return
 	}
 	// if time right, then push
-	if checkMaxAge(feedPost.PublishedParsed, interval) {
-		var feedText string
-		var re = regexp.MustCompile(`nitter|telegram`)
-		if re.MatchString(feedPost.Link) { // fix duplicated title in nitter/telegram
-			feedText = p.Sanitize(feedPost.Description)
-		} else {
-			feedText = feedPost.Title + "\n\n" + p.Sanitize(feedPost.Description)
-		}
-		//fmt.Println(feedText)
+	if !checkMaxAge(feedPost.PublishedParsed, interval) {
+		log.Println("[DEBUG] Post is too old", feedItem.Url, time.Since(*feedPost.PublishedParsed), interval)
+		return
+	}
+	
+	var feedText string
+	var re = regexp.MustCompile(`nitter|telegram`)
+	if re.MatchString(feedPost.Link) { // fix duplicated title in nitter/telegram
+		feedText = p.Sanitize(feedPost.Description)
+	} else {
+		feedText = feedPost.Title + "\n\n" + p.Sanitize(feedPost.Description)
+	}
+	//fmt.Println(feedText)
 
-		var regImg = regexp.MustCompile(`\<img.src=\"(http.*\.(jpg|png|gif)).*\/\>`) // allow inline images
-		feedText = regImg.ReplaceAllString(feedText, "$1\n")
+	var regImg = regexp.MustCompile(`\<img.src=\"(http.*\.(jpg|png|gif)).*\/\>`) // allow inline images
+	feedText = regImg.ReplaceAllString(feedText, "$1\n")
 
-		var regLink = regexp.MustCompile(`\<a.href=\"(https.*?)\"\ .*\<\/a\>`) // allow inline links
-		feedText = regLink.ReplaceAllString(feedText, "$1\n")
+	var regLink = regexp.MustCompile(`\<a.href=\"(https.*?)\"\ .*\<\/a\>`) // allow inline links
+	feedText = regLink.ReplaceAllString(feedText, "$1\n")
 
-		feedText = html.UnescapeString(feedText) // decode html strings
+	feedText = html.UnescapeString(feedText) // decode html strings
 
-		if feedPost.Enclosures != nil { // allow enclosure images/links
-			for _, enclosure := range feedPost.Enclosures {
-				feedText = feedText + "\n\n" + enclosure.URL
-			}
-		}
-
-		if feedPost.Link != "" {
-			feedText = feedText + "\n\n" + feedPost.Link
-		}
-
-		var tags nostr.Tags
-
-		if feedPost.Categories != nil { // use post categories as tags
-			for _, category := range feedPost.Categories {
-				tags = append(tags, nostr.Tag{"t", category})
-			}
-		}
-
-		tags = append(tags, nostr.Tag{"proxy", feedItem.Url + `#` + url.QueryEscape(feedPost.Link), "rss"})
-
-		ev := nostr.Event{
-			PubKey:    feedItem.Pub,
-			CreatedAt: nostr.Timestamp(feedPost.PublishedParsed.Unix()),
-			Kind:      nostr.KindTextNote,
-			Tags:      tags,
-			Content:   feedText,
-		}
-
-		ev.Sign(feedItem.Sec)
-
-		if noPub == false {
-			nostrPostItem(ev)
+	if feedPost.Enclosures != nil { // allow enclosure images/links
+		for _, enclosure := range feedPost.Enclosures {
+			feedText = feedText + "\n\n" + enclosure.URL
 		}
 	}
+
+	if feedPost.Link != "" {
+		feedText = feedText + "\n\n" + feedPost.Link
+	}
+
+	var tags nostr.Tags
+
+	if feedPost.Categories != nil { // use post categories as tags
+		for _, category := range feedPost.Categories {
+			tags = append(tags, nostr.Tag{"t", category})
+		}
+	}
+
+	tags = append(tags, nostr.Tag{"proxy", feedItem.Url + `#` + url.QueryEscape(feedPost.Link), "rss"})
+
+	ev := nostr.Event{
+		PubKey:    feedItem.Pub,
+		CreatedAt: nostr.Timestamp(feedPost.PublishedParsed.Unix()),
+		Kind:      nostr.KindTextNote,
+		Tags:      tags,
+		Content:   feedText,
+	}
+
+	ev.Sign(feedItem.Sec)
+
+	if noPub == false {
+		nostrPostItem(ev)
+	} else {
+		log.Println("[DEBUG] not publishing post", ev)
+	}
+	
 }
 
 func (a *Atomstr) dbWriteFeed(feedItem *feedStruct) bool {
