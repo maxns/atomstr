@@ -17,6 +17,8 @@ RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w -linkmode external -extldf
 
 FROM alpine:latest
 
+RUN apk add --no-cache curl
+
 LABEL org.opencontainers.image.title="atomstr"
 LABEL org.opencontainers.image.source=https://sr.ht/~psic4t/atromstr
 LABEL org.opencontainers.image.description="Atomstr is a RSS/Atom gateway to Nostr"
