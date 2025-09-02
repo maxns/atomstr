@@ -132,13 +132,19 @@ func (a *Atomstr) processFeedPost(feedItem feedStruct, feedPost *gofeed.Item) {
 
 	ev.Sign(feedItem.Sec)
 
+	var shouldRecord = true
+
 	if !noPub {
-		nostrPostItem(ev)
-		// Record that we published this post
-		a.dbRecordPublishedPost(feedPost.Link, feedItem.Url, ev.ID)
+		publishedCount, errCount := nostrPostItem(ev)
+		log.Printf("[DEBUG] Published post to %d / %d relays\n", publishedCount, errCount+publishedCount)
+		shouldRecord = publishedCount > 0
 	} else {
 		log.Println("[DEBUG] not publishing post", ev)
-		// Still record it even if not actually publishing (for testing)
+		shouldRecord = true
+	}
+
+	if shouldRecord {
+		log.Println("[DEBUG] Recording published post", feedPost.Link)
 		a.dbRecordPublishedPost(feedPost.Link, feedItem.Url, ev.ID)
 	}
 

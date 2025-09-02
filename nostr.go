@@ -33,8 +33,9 @@ func nostrUpdateFeedMetadata(feedItem *feedStruct) {
 	ev.Sign(feedItem.Sec)
 	log.Println("[DEBUG] Updating feed metadata for", feedItem.Title)
 
-	if noPub == false {
-		nostrPostItem(ev)
+	if !noPub {
+		publishedCount, errCount := nostrPostItem(ev)
+		log.Printf("[DEBUG] Published feed metadata to %d / %d relays\n", publishedCount, errCount+publishedCount)
 	}
 }
 
@@ -74,28 +75,35 @@ func (a *Atomstr) ALTnostrUpdateAllFeedsMetadata() {
 	log.Println("[INFO] Finished updating feeds metadata")
 }
 
-func nostrPostItem(ev nostr.Event) {
+func nostrPostItem(ev nostr.Event) (int, int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	successCount := 0
+	errCount := 0
 	for _, url := range relaysToPublishTo {
 		relay, err := nostr.RelayConnect(ctx, url)
 		if err != nil {
 			log.Println("[ERROR]", err)
+			errCount++
 			continue
 		}
 		err = relay.Publish(ctx, ev)
 		if err != nil {
 			log.Println("[ERROR]", err)
+			errCount++
 			continue
 		}
 
 		err = relay.Close()
 		if err != nil {
 			log.Println("[ERROR]", err)
+			errCount++
 			continue
 		}
 
 		log.Printf("[DEBUG] Event published to %s\n", url)
+		successCount++
 	}
+	return successCount, errCount
 }
