@@ -37,10 +37,8 @@ type suggestTagsRequest struct {
 		ExistingTags []string `json:"existingTags,omitempty"`
 		SearchText   string   `json:"searchText,omitempty"`
 		ByEvent      *struct {
-			Event struct {
-				Content string `json:"content"`
-			} `json:"event"`
-			LinkedEvents []any `json:"linkedEvents,omitempty"`
+			Event        nostr.Event `json:"event"`
+			LinkedEvents []any       `json:"linkedEvents,omitempty"`
 		} `json:"byEvent,omitempty"`
 		ByEventId *struct {
 			Id        string   `json:"id"`
@@ -65,17 +63,14 @@ type suggestTagsResponse struct {
 }
 
 func (h *EnrichWithTagsHook) BeforePublish(ctx context.Context, feed feedStruct, feedPost feedPostStruct, event *nostr.Event) (*nostr.Event, error) {
-	// Build request: include byEvent with the event content and pass note as well
+	// Build request: include byEvent with the full event and pass note as well
 	reqBody := suggestTagsRequest{}
 	reqBody.Params.Note = event.Content
 	reqBody.Params.ExistingTags = extractCurrentTags(event)
 	reqBody.Params.ByEvent = &struct {
-		Event struct {
-			Content string `json:"content"`
-		} `json:"event"`
-		LinkedEvents []any `json:"linkedEvents,omitempty"`
-	}{}
-	reqBody.Params.ByEvent.Event.Content = event.Content
+		Event        nostr.Event `json:"event"`
+		LinkedEvents []any       `json:"linkedEvents,omitempty"`
+	}{Event: *event}
 	reqBody.TimeMs = time.Now().UnixMilli()
 
 	buf, err := json.Marshal(&reqBody)
@@ -147,7 +142,9 @@ func extractCurrentTags(event *nostr.Event) []string {
 	for _, tag := range event.Tags {
 		if len(tag) >= 2 && tag[0] == "t" {
 			v := strings.TrimSpace(tag[1])
-			if v != "" { tags = append(tags, v) }
+			if v != "" {
+				tags = append(tags, v)
+			}
 		}
 	}
 	return tags
