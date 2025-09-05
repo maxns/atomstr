@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -93,24 +94,34 @@ func (h *EnrichWithTagsHook) BeforePublish(ctx context.Context, feed feedStruct,
 		}
 		req.Header.Set(k, v)
 	}
+	log.Printf("[DEBUG] enrich-with-tags request: %s", string(buf))
 
 	resp, err := h.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, errors.New("enrich-with-tags returned non-2xx status")
+		var respMsg string
+		if resp.Body != nil {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			respMsg = string(bodyBytes)
+			log.Printf("[DEBUG] enrich-with-tags non-2xx response: %s", respMsg)
+			// Reset body for later error handling if needed
+			resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		}
+		return nil, errors.New("enrich-with-tags returned non-2xx status: " + resp.Status)
 	}
+	defer resp.Body.Close()
 
 	var out suggestTagsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, err
 	}
 	if !out.Success {
-		return nil, errors.New("enrich-with-tags returned error")
+		return nil, errors.New("enrich-with-tags returned error: " + out.Message)
 	}
 	if out.Result == nil || len(out.Result.Tags) == 0 {
+		log.Printf("[DEBUG] enrich-with-tags returned no tags")
 		return event, nil
 	}
 
