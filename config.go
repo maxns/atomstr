@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -41,10 +42,12 @@ func loadHooksConfig(path string) (*HooksConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("[DEBUG] Loaded hooks config from %s", path)
 	cfg := &HooksConfig{}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, err
 	}
+	log.Printf("[DEBUG] Parsed hooks config: %+v", cfg.Hooks)
 	return cfg, nil
 }
 
