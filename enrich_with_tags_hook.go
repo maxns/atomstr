@@ -94,7 +94,7 @@ func (h *EnrichWithTagsHook) BeforePublish(ctx context.Context, feed feedStruct,
 		}
 		req.Header.Set(k, v)
 	}
-	log.Printf("[DEBUG] enrich-with-tags request: %s", string(buf))
+	log.Printf("[TRACE] enrich-with-tags request: %s, headers: %v", string(buf), req.Header)
 
 	resp, err := h.client.Do(req)
 	if err != nil {
