@@ -29,8 +29,11 @@ func (a *Atomstr) startWorkers(work string) {
 		switch work {
 		case "metadata":
 			go a.processFeedMetadata(ch, &wg)
-		default:
+		case "scrape":
 			go a.processFeedUrl(ch, &wg)
+		default:
+			log.Println("[ERROR] Invalid work type", work)
+			return
 		}
 	}
 
@@ -80,6 +83,35 @@ func main() {
 	} else {
 		log.Println("[INFO] Starting atomstr v", atomstrversion)
 		//slog.Info("Starting atomstr v", atomstrversion)
+
+		// Load hooks from YAML if available
+		if cfgPath, err := findDefaultHooksConfig(); err == nil {
+			if cfg, err := loadHooksConfig(cfgPath); err == nil {
+				for _, h := range cfg.Hooks.PrePostNostrPublish {
+					switch h.Type {
+					case "restEnrich":
+						method := h.Method
+						if method == "" {
+							method = "POST"
+						}
+						a.RegisterPrePublishHook(NewRestEnrichHook(h.URL, method, h.Headers, h.ComposeRequest, h.ParseResponse))
+						log.Println("[INFO] Registered prePostNostrPublish hook:", h.Name)
+					case "enrichWithTags":
+						endpoint := h.SuggestTagsURL
+						if endpoint == "" {
+							endpoint = h.URL // allow url alias
+						}
+						a.RegisterPrePublishHook(NewEnrichWithTagsHook(endpoint, h.Headers))
+						log.Println("[INFO] Registered enrichWithTags hook:", h.Name)
+					}
+				}
+			} else {
+				log.Println("[WARN] Failed to load hooks config:", err)
+			}
+		} else {
+			log.Println("[DEBUG] No hooks config found")
+		}
+
 		go a.webserver()
 
 		// first run

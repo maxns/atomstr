@@ -70,6 +70,10 @@ func (a *Atomstr) processFeedUrl(ch chan feedStruct, wg *sync.WaitGroup) {
 	wg.Done()
 }
 
+// processFeedPost processes a single feed post item. It sanitizes and formats the post content,
+// checks if the post should be published (based on age, duplicates, etc.), and prepares the post
+// text and tags for publishing to Nostr. It also handles inline images, links, enclosures, and
+// categories as tags.
 func (a *Atomstr) processFeedPost(feedItem feedStruct, feedPost *gofeed.Item) {
 	p := bluemonday.StrictPolicy() // initialize html sanitizer
 	p.AllowImages()
@@ -130,6 +134,41 @@ func (a *Atomstr) processFeedPost(feedItem feedStruct, feedPost *gofeed.Item) {
 		Content:   feedText,
 	}
 
+	// Map gofeed.Item into stable feedPostStruct for hook API
+	post := feedPostStruct{
+		Title:         feedPost.Title,
+		Description:   feedPost.Description,
+		Link:          feedPost.Link,
+		GUID:          feedPost.GUID,
+		Published:     "",
+		PublishedUnix: 0,
+		Categories:    nil,
+		Enclosures:    nil,
+	}
+	if feedPost.PublishedParsed != nil {
+		post.Published = feedPost.Published
+		post.PublishedUnix = feedPost.PublishedParsed.Unix()
+	}
+	if len(feedPost.Categories) > 0 {
+		post.Categories = append(post.Categories, feedPost.Categories...)
+	}
+	if len(feedPost.Enclosures) > 0 {
+		for _, e := range feedPost.Enclosures {
+			post.Enclosures = append(post.Enclosures, e.URL)
+		}
+	}
+
+	// Run pre-publish hooks (enrichment) before signing/publishing
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if updated, err := a.runPrePublishHooks(ctx, feedItem, post, &ev); err != nil {
+		log.Println("[ERROR] pre-publish hooks aborted event:", err)
+		return
+	} else if updated != nil {
+		ev = *updated
+	}
+
+	// Sign after hooks potentially modify the event
 	ev.Sign(feedItem.Sec)
 
 	var shouldRecord = true

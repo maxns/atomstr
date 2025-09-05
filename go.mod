@@ -8,6 +8,7 @@ require (
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/mmcdole/gofeed v1.3.0
 	github.com/nbd-wtf/go-nostr v0.34.5
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

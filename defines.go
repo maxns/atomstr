@@ -27,6 +27,8 @@ var atomstrversion string = "0.9.6"
 
 type Atomstr struct {
 	db *sql.DB
+	// Registered hooks invoked before publishing/signing a Nostr event
+	prePublishHooks []NostrEventHook
 }
 
 var sqlInit = `
@@ -48,15 +50,27 @@ CREATE INDEX IF NOT EXISTS idx_published_posts_nostr_event_id ON published_posts
 `
 
 type feedStruct struct {
-	Url         string
-	Sec         string
-	Pub         string
-	Npub        string
-	Title       string
-	Description string
-	Link        string
-	Image       string
-	Posts       []*gofeed.Item
+	Url         string         `json:"url"`
+	Sec         string         `json:"-"`
+	Pub         string         `json:"pub"`
+	Npub        string         `json:"npub"`
+	Title       string         `json:"title"`
+	Description string         `json:"description"`
+	Link        string         `json:"link"`
+	Image       string         `json:"image"`
+	Posts       []*gofeed.Item `json:"-"`
+}
+
+// feedPostStruct is a stable representation of a single feed post for external APIs.
+type feedPostStruct struct {
+	Title         string   `json:"title"`
+	Description   string   `json:"description"`
+	Link          string   `json:"link"`
+	GUID          string   `json:"guid"`
+	Published     string   `json:"published"`
+	PublishedUnix int64    `json:"published_unix"`
+	Categories    []string `json:"categories"`
+	Enclosures    []string `json:"enclosures"`
 }
 
 type webIndex struct {
