@@ -21,7 +21,7 @@ type HookStages struct {
 }
 
 // NamedHook is a generic hook descriptor with a type and name.
-// Currently supported type: "restEnrich"
+// Currently supported types: "restEnrich", "customHook"
 type NamedHook struct {
 	Name string `yaml:"name"`
 	Type string `yaml:"type"`
@@ -33,8 +33,13 @@ type NamedHook struct {
 	ComposeRequest string            `yaml:"composeRequestFunc"`
 	ParseResponse  string            `yaml:"parseResponseFunc"`
 
-	// EnrichWithTags fields
-	SuggestTagsURL string `yaml:"suggestTagsUrl"`
+	// Custom hook fields
+	HookName string                 `yaml:"hookName"` // Name of the custom hook to instantiate
+	Config   map[string]interface{} `yaml:"config"`   // Custom configuration for the hook
+
+	// Legacy fields (deprecated - use customHook instead)
+	SuggestTagsURL   string `yaml:"suggestTagsUrl"`
+	IngestArticleURL string `yaml:"ingestArticleUrl"`
 }
 
 func loadHooksConfig(path string) (*HooksConfig, error) {

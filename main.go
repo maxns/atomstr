@@ -96,13 +96,37 @@ func main() {
 						}
 						a.RegisterPrePublishHook(NewRestEnrichHook(h.URL, method, h.Headers, h.ComposeRequest, h.ParseResponse))
 						log.Println("[INFO] Registered prePostNostrPublish hook:", h.Name)
+					case "customHook":
+						if h.HookName == "" {
+							log.Printf("[ERROR] customHook '%s' missing hookName field", h.Name)
+							continue
+						}
+						hook, err := CreateCustomHook(h.HookName, h.Config)
+						if err != nil {
+							log.Printf("[ERROR] Failed to create custom hook '%s': %v", h.Name, err)
+							continue
+						}
+						a.RegisterPrePublishHook(hook)
+						log.Printf("[INFO] Registered custom hook '%s' (type: %s)", h.Name, h.HookName)
+					// Legacy support - these will be removed in future versions
 					case "enrichWithTags":
 						endpoint := h.SuggestTagsURL
 						if endpoint == "" {
 							endpoint = h.URL // allow url alias
 						}
 						a.RegisterPrePublishHook(NewEnrichWithTagsHook(endpoint, h.Headers))
+						log.Println("[WARN] enrichWithTags hook type is deprecated, use customHook instead")
 						log.Println("[INFO] Registered enrichWithTags hook:", h.Name)
+					case "credoIngestArticle":
+						endpoint := h.IngestArticleURL
+						if endpoint == "" {
+							endpoint = h.URL // allow url alias
+						}
+						a.RegisterPrePublishHook(NewCredoIngestArticleHook(endpoint, h.Headers))
+						log.Println("[WARN] credoIngestArticle hook type is deprecated, use customHook instead")
+						log.Println("[INFO] Registered credoIngestArticle hook:", h.Name)
+					default:
+						log.Printf("[WARN] Unknown hook type '%s' for hook '%s'", h.Type, h.Name)
 					}
 				}
 			} else {

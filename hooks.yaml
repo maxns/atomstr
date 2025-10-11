@@ -1,0 +1,19 @@
+hooks:
+  prePostNostrPublish:
+    # Example of legacy hook (deprecated)
+    # - name: addSuggestedTags
+    #   type: enrichWithTags
+    #   suggestTagsUrl: https://some-url.com/api/suggest-tags
+    #   headers: 
+    #     x-auth-key: "SOMEKEY"
+    
+    # New customHook approach - self-contained and pluggable
+    - name: ingestArticleToCredo
+      type: customHook
+      hookName: credoIngestArticle
+      config:
+        url: https://credo-api.example.com/api/ingest/article
+        headers:
+          X-Auth-Key: "$CREDO_BACKEND_AUTH_KEY"
+
+  preNostrProfilePublish: []
