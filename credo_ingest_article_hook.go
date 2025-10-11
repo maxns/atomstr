@@ -125,8 +125,11 @@ type credoIngestArticleResponse struct {
 var urlRegex = regexp.MustCompile(`https?://[^\s]+`)
 
 func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStruct, feedPost feedPostStruct, event *nostr.Event) (*nostr.Event, error) {
+	log.Printf("[DEBUG] credo-ingest-article: processing event %s with content length %d", event.ID, len(event.Content))
+
 	// Extract URLs from the event content
 	urls := extractURLsFromContent(event.Content)
+	log.Printf("[DEBUG] credo-ingest-article: found %d URLs in content", len(urls))
 	if len(urls) == 0 {
 		log.Printf("[DEBUG] credo-ingest-article: no URLs found in event content, skipping")
 		return event, nil
@@ -311,6 +314,7 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 	}
 
 	// Return original event if no tags were added
+	log.Printf("[DEBUG] credo-ingest-article: completed processing for event %s", event.ID)
 	return event, nil
 }
 
