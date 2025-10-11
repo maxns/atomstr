@@ -21,6 +21,26 @@ type NostrEventHook interface {
 	BeforePublish(ctx context.Context, feed feedStruct, feedPost feedPostStruct, event *nostr.Event) (*nostr.Event, error)
 }
 
+// CustomHookFactory creates a custom hook from configuration
+type CustomHookFactory func(config map[string]interface{}) (NostrEventHook, error)
+
+// Global registry for custom hooks
+var customHookRegistry = map[string]CustomHookFactory{}
+
+// RegisterCustomHook registers a custom hook factory
+func RegisterCustomHook(name string, factory CustomHookFactory) {
+	customHookRegistry[name] = factory
+}
+
+// CreateCustomHook creates a custom hook from configuration
+func CreateCustomHook(hookName string, config map[string]interface{}) (NostrEventHook, error) {
+	factory, exists := customHookRegistry[hookName]
+	if !exists {
+		return nil, errors.New("unknown custom hook: " + hookName)
+	}
+	return factory(config)
+}
+
 // RegisterPrePublishHook appends a hook to the Atomstr instance.
 func (a *Atomstr) RegisterPrePublishHook(h NostrEventHook) {
 	a.prePublishHooks = append(a.prePublishHooks, h)
