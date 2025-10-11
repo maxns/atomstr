@@ -61,26 +61,12 @@ func NewCredoIngestArticleHookFromConfig(config map[string]interface{}) (NostrEv
 	return NewCredoIngestArticleHook(url, headers), nil
 }
 
-// CredoIngestArticleRequest per hooks/CredoIngestArticle.spec.md
+// CredoIngestArticleRequest per API specification
 type credoIngestArticleRequest struct {
-	Params struct {
-		URL      string `json:"url"`
-		Title    string `json:"title,omitempty"`
-		Content  string `json:"content"`
-		Language string `json:"language,omitempty"`
-		ByEvent  *struct {
-			Event struct {
-				Content string `json:"content"`
-			} `json:"event"`
-			LinkedEvents []interface{} `json:"linkedEvents,omitempty"`
-		} `json:"byEvent,omitempty"`
-	} `json:"params"`
-	Options struct {
-		AuthKey string      `json:"authKey,omitempty"`
-		Retry   interface{} `json:"retry,omitempty"`
-	} `json:"options"`
-	Hints  []string `json:"hints,omitempty"`
-	TimeMs int64    `json:"timeMs,omitempty"`
+	URL      string `json:"url"`
+	Title    string `json:"title,omitempty"`
+	Content  string `json:"content"`
+	Language string `json:"language,omitempty"`
 }
 
 type credoIngestArticleResponse struct {
@@ -143,21 +129,10 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 
 	// Build request
 	reqBody := credoIngestArticleRequest{}
-	reqBody.Params.URL = articleURL
-	reqBody.Params.Title = title
-	reqBody.Params.Content = event.Content
-	reqBody.Params.Language = "en" // Default to English
-	reqBody.Params.ByEvent = &struct {
-		Event struct {
-			Content string `json:"content"`
-		} `json:"event"`
-		LinkedEvents []interface{} `json:"linkedEvents,omitempty"`
-	}{
-		Event: struct {
-			Content string `json:"content"`
-		}{Content: event.Content},
-	}
-	reqBody.TimeMs = time.Now().UnixMilli()
+	reqBody.URL = articleURL
+	reqBody.Title = title
+	reqBody.Content = event.Content
+	reqBody.Language = "en" // Default to English
 
 	buf, err := json.Marshal(&reqBody)
 	if err != nil {
