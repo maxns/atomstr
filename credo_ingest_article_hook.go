@@ -77,7 +77,7 @@ type credoIngestArticleResponse struct {
 	Assists   *struct {
 		GetFeatures *struct {
 			Features                      []string `json:"features"`
-			EstimatedReadTimeMinutes      int      `json:"estimatedReadTimeMinutes"`
+			EstimatedReadTimeMinutes      float64  `json:"estimatedReadTimeMinutes"`
 			TopicHashTags                 []string `json:"topicHashTags"`
 			Clarity                       string   `json:"clarity"`
 			LanguageCode                  string   `json:"languageCode"`
@@ -211,8 +211,8 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 	if out.Assists != nil && out.Assists.GetFeatures != nil {
 		features := out.Assists.GetFeatures
 		log.Printf("[DEBUG] credo-ingest-article: assists structure: %+v", out.Assists)
-		log.Printf("[DEBUG] credo-ingest-article: getFeatures - features: %v, readTime: %dm, hashtags: %v, clarity: %s, tone: %s, language: %s", features.Features, features.EstimatedReadTimeMinutes, features.TopicHashTags, features.Clarity, features.Tone, features.LanguageCode)
-		log.Printf("[INFO] credo-ingest-article: analysis complete - tags: %v, readTime: %dm, clarity: %s", features.TopicHashTags, features.EstimatedReadTimeMinutes, features.Clarity)
+		log.Printf("[DEBUG] credo-ingest-article: getFeatures - features: %v, readTime: %.1fm, hashtags: %v, clarity: %s, tone: %s, language: %s", features.Features, features.EstimatedReadTimeMinutes, features.TopicHashTags, features.Clarity, features.Tone, features.LanguageCode)
+		log.Printf("[INFO] credo-ingest-article: analysis complete - tags: %v, readTime: %.1fm, clarity: %s", features.TopicHashTags, features.EstimatedReadTimeMinutes, features.Clarity)
 
 		// Extract and add topic hashtags as "t" tags and unbait data as "alt" tags
 		updated := *event

@@ -43,8 +43,8 @@ type CredoIngestArticleResponse struct {
 	Features  []string `json:"features,omitempty"`
 	Assists   *struct {
 		GetFeatures *struct {
-			Features                        []string `json:"features"`
-			EstimatedReadTimeMinutes        int      `json:"estimatedReadTimeMinutes"`
+			Features                      []string `json:"features"`
+			EstimatedReadTimeMinutes        float64  `json:"estimatedReadTimeMinutes"`
 			TopicHashTags                   []string `json:"topicHashTags"` // hashtags, including #
 			Clarity                         string   `json:"clarity"`
 			LanguageCode                    string   `json:"languageCode"`
@@ -107,7 +107,7 @@ type ErrorResponse struct {
 	"assists": {
 		"getFeatures": {
 			"features": ["unbait"],
-			"estimatedReadTimeMinutes": 1,
+			"estimatedReadTimeMinutes": 0.5,
 			"topicHashTags": ["#bitcoin", "#cryptocurrency"],
 			"clarity": "high",
 			"languageCode": "en",
