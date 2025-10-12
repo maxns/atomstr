@@ -70,40 +70,37 @@ type credoIngestArticleRequest struct {
 }
 
 type credoIngestArticleResponse struct {
-	Success bool     `json:"success"`
-	Tags    []string `json:"tags,omitempty"` // Root level tags array from API response
-	Result  *struct {
-		ArticleId string   `json:"articleId,omitempty"`
-		Features  []string `json:"features,omitempty"`
-		Assists   *struct {
-			GetFeatures *struct {
-				Features                      []string `json:"features"`
-				EstimatedReadTimeMinutes      int      `json:"estimatedReadTimeMinutes"`
-				TopicHashTags                 []string `json:"topicHashTags"`
-				Clarity                       string   `json:"clarity"`
-				LanguageCode                  string   `json:"languageCode"`
-				Tone                          string   `json:"tone"`
-				Length                        string   `json:"length"`
-				Complexity                    string   `json:"complexity"`
-				AnalysisSummaryInUserLanguage string   `json:"analysisSummaryInUserLanguage"`
-			} `json:"getFeatures,omitempty"`
-			Unbait *struct {
-				ClickbaitScore int    `json:"clickbaitScore"`
-				Feature        string `json:"feature"`
-				Meta           struct {
-					ArticleMeta struct {
-						Title  string        `json:"title"`
-						Links  []interface{} `json:"links"`
-						Images []interface{} `json:"images"`
-					} `json:"articleMeta"`
-				} `json:"meta"`
-				UnbaitAnswer string `json:"unbaitAnswer"`
-				Why          string `json:"why"`
-				UnbaitTitle  string `json:"unbaitTitle"`
-			} `json:"unbait,omitempty"`
-		} `json:"assists,omitempty"`
-		Message string `json:"message"`
-	} `json:"result"`
+	Success   bool     `json:"success"`
+	Tags      []string `json:"tags,omitempty"` // Root level tags array from API response
+	ArticleId string   `json:"articleId,omitempty"`
+	Features  []string `json:"features,omitempty"`
+	Assists   *struct {
+		GetFeatures *struct {
+			Features                      []string `json:"features"`
+			EstimatedReadTimeMinutes      int      `json:"estimatedReadTimeMinutes"`
+			TopicHashTags                 []string `json:"topicHashTags"`
+			Clarity                       string   `json:"clarity"`
+			LanguageCode                  string   `json:"languageCode"`
+			Tone                          string   `json:"tone"`
+			Length                        string   `json:"length"`
+			Complexity                    string   `json:"complexity"`
+			AnalysisSummaryInUserLanguage string   `json:"analysisSummaryInUserLanguage"`
+		} `json:"getFeatures,omitempty"`
+		Unbait *struct {
+			ClickbaitScore int    `json:"clickbaitScore"`
+			Feature        string `json:"feature"`
+			Meta           struct {
+				ArticleMeta struct {
+					Title  string        `json:"title"`
+					Links  []interface{} `json:"links"`
+					Images []interface{} `json:"images"`
+				} `json:"articleMeta"`
+			} `json:"meta"`
+			UnbaitAnswer string `json:"unbaitAnswer"`
+			Why          string `json:"why"`
+			UnbaitTitle  string `json:"unbaitTitle"`
+		} `json:"unbait,omitempty"`
+	} `json:"assists,omitempty"`
 	Message string `json:"message,omitempty"`
 	TimeMs  int64  `json:"timeMs,omitempty"`
 }
@@ -195,9 +192,7 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 	}
 
 	log.Printf("[DEBUG] credo-ingest-article: parsed response - success: %t, message: %s", out.Success, out.Message)
-	if out.Result != nil {
-		log.Printf("[DEBUG] credo-ingest-article: result - articleId: %s, features: %v", out.Result.ArticleId, out.Result.Features)
-	}
+	log.Printf("[DEBUG] credo-ingest-article: result - articleId: %s, features: %v", out.ArticleId, out.Features)
 
 	if !out.Success {
 		log.Printf("[ERROR] credo-ingest-article returned error: %s", out.Message)
@@ -205,109 +200,107 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 	}
 
 	// Log successful processing and extract tags
-	if out.Result != nil {
-		log.Printf("[DEBUG] credo-ingest-article: full result structure: %+v", out.Result)
+	log.Printf("[DEBUG] credo-ingest-article: full response structure - articleId: %s, features: %v", out.ArticleId, out.Features)
 
-		if out.Result.ArticleId != "" {
-			log.Printf("[INFO] credo-ingest-article: article created with ID: %s", out.Result.ArticleId)
-		} else {
-			log.Printf("[INFO] credo-ingest-article: article processed (no ID - not persisted)")
-		}
+	if out.ArticleId != "" {
+		log.Printf("[INFO] credo-ingest-article: article created with ID: %s", out.ArticleId)
+	} else {
+		log.Printf("[INFO] credo-ingest-article: article processed (no ID - not persisted)")
+	}
 
-		if out.Result.Assists != nil && out.Result.Assists.GetFeatures != nil {
-			features := out.Result.Assists.GetFeatures
-			log.Printf("[DEBUG] credo-ingest-article: assists structure: %+v", out.Result.Assists)
-			log.Printf("[DEBUG] credo-ingest-article: getFeatures - features: %v, readTime: %dm, hashtags: %v, clarity: %s, tone: %s, language: %s", features.Features, features.EstimatedReadTimeMinutes, features.TopicHashTags, features.Clarity, features.Tone, features.LanguageCode)
-			log.Printf("[INFO] credo-ingest-article: analysis complete - tags: %v, readTime: %dm, clarity: %s", features.TopicHashTags, features.EstimatedReadTimeMinutes, features.Clarity)
+	if out.Assists != nil && out.Assists.GetFeatures != nil {
+		features := out.Assists.GetFeatures
+		log.Printf("[DEBUG] credo-ingest-article: assists structure: %+v", out.Assists)
+		log.Printf("[DEBUG] credo-ingest-article: getFeatures - features: %v, readTime: %dm, hashtags: %v, clarity: %s, tone: %s, language: %s", features.Features, features.EstimatedReadTimeMinutes, features.TopicHashTags, features.Clarity, features.Tone, features.LanguageCode)
+		log.Printf("[INFO] credo-ingest-article: analysis complete - tags: %v, readTime: %dm, clarity: %s", features.TopicHashTags, features.EstimatedReadTimeMinutes, features.Clarity)
 
-			// Extract and add topic hashtags as "t" tags and unbait data as "alt" tags
-			updated := *event
-			tagsAdded := false
+		// Extract and add topic hashtags as "t" tags and unbait data as "alt" tags
+		updated := *event
+		tagsAdded := false
 
-			// Replace tags array with tags from API response if available
-			if len(out.Tags) > 0 {
-				// Clear existing "t" tags and replace with API-provided tags
-				var newTags []nostr.Tag
+		// Replace tags array with tags from API response if available
+		if len(out.Tags) > 0 {
+			// Clear existing "t" tags and replace with API-provided tags
+			var newTags []nostr.Tag
 
-				// Keep non-"t" tags
-				for _, tag := range updated.Tags {
-					if len(tag) >= 2 && tag[0] == "t" {
-						// Skip existing "t" tags - they will be replaced
-						continue
-					}
-					newTags = append(newTags, tag)
+			// Keep non-"t" tags
+			for _, tag := range updated.Tags {
+				if len(tag) >= 2 && tag[0] == "t" {
+					// Skip existing "t" tags - they will be replaced
+					continue
 				}
-
-				// Add new tags from API response (strip # prefix)
-				addedCount := 0
-				for _, tag := range out.Tags {
-					// Strip # prefix and clean up
-					cleanTag := strings.TrimSpace(strings.TrimPrefix(tag, "#"))
-					if cleanTag == "" {
-						continue
-					}
-					newTags = append(newTags, nostr.Tag{"t", cleanTag})
-					addedCount++
-				}
-
-				updated.Tags = newTags
-
-				log.Printf("[INFO] credo-ingest-article: replaced event tags with %d API-provided tags", addedCount)
-				tagsAdded = true
+				newTags = append(newTags, tag)
 			}
 
-			// Add AI assist results as "alt" tags with JSON-encoded feature objects
-			if out.Result.Assists != nil {
-				// Get existing "alt" tags to avoid duplicates
-				existingAltTags := map[string]bool{}
-				for _, tag := range updated.Tags {
-					if len(tag) >= 2 && tag[0] == "alt" {
-						existingAltTags[strings.TrimSpace(tag[1])] = true
-					}
+			// Add new tags from API response (strip # prefix)
+			addedCount := 0
+			for _, tag := range out.Tags {
+				// Strip # prefix and clean up
+				cleanTag := strings.TrimSpace(strings.TrimPrefix(tag, "#"))
+				if cleanTag == "" {
+					continue
 				}
+				newTags = append(newTags, nostr.Tag{"t", cleanTag})
+				addedCount++
+			}
 
-				assistTagsAdded := 0
+			updated.Tags = newTags
 
-				// Add get-features assist as JSON
-				if features != nil && !existingAltTags["aiAssist:get-features"] {
-					if featuresJSON, err := json.Marshal(features); err == nil {
-						updated.Tags = append(updated.Tags, nostr.Tag{"alt", "aiAssist:get-features", string(featuresJSON)})
-						existingAltTags["aiAssist:get-features"] = true
+			log.Printf("[INFO] credo-ingest-article: replaced event tags with %d API-provided tags", addedCount)
+			tagsAdded = true
+		}
+
+		// Add AI assist results as "alt" tags with JSON-encoded feature objects
+		if out.Assists != nil {
+			// Get existing "alt" tags to avoid duplicates
+			existingAltTags := map[string]bool{}
+			for _, tag := range updated.Tags {
+				if len(tag) >= 2 && tag[0] == "alt" {
+					existingAltTags[strings.TrimSpace(tag[1])] = true
+				}
+			}
+
+			assistTagsAdded := 0
+
+			// Add get-features assist as JSON
+			if features != nil && !existingAltTags["aiAssist:get-features"] {
+				if featuresJSON, err := json.Marshal(features); err == nil {
+					updated.Tags = append(updated.Tags, nostr.Tag{"alt", "aiAssist:get-features", string(featuresJSON)})
+					existingAltTags["aiAssist:get-features"] = true
+					assistTagsAdded++
+				} else {
+					log.Printf("[WARN] credo-ingest-article: failed to marshal get-features: %v", err)
+				}
+			}
+
+			// Add unbait assist as JSON if available
+			if out.Assists.Unbait != nil {
+				log.Printf("[DEBUG] credo-ingest-article: unbait assist found - clickbaitScore: %d, answer: %s", out.Assists.Unbait.ClickbaitScore, out.Assists.Unbait.UnbaitAnswer)
+
+				if !existingAltTags["aiAssist:unbait"] {
+					if unbaitJSON, err := json.Marshal(out.Assists.Unbait); err == nil {
+						updated.Tags = append(updated.Tags, nostr.Tag{"alt", "aiAssist:unbait", string(unbaitJSON)})
+						existingAltTags["aiAssist:unbait"] = true
 						assistTagsAdded++
 					} else {
-						log.Printf("[WARN] credo-ingest-article: failed to marshal get-features: %v", err)
+						log.Printf("[WARN] credo-ingest-article: failed to marshal unbait: %v", err)
 					}
-				}
-
-				// Add unbait assist as JSON if available
-				if out.Result.Assists.Unbait != nil {
-					log.Printf("[DEBUG] credo-ingest-article: unbait assist found - clickbaitScore: %d, answer: %s", out.Result.Assists.Unbait.ClickbaitScore, out.Result.Assists.Unbait.UnbaitAnswer)
-
-					if !existingAltTags["aiAssist:unbait"] {
-						if unbaitJSON, err := json.Marshal(out.Result.Assists.Unbait); err == nil {
-							updated.Tags = append(updated.Tags, nostr.Tag{"alt", "aiAssist:unbait", string(unbaitJSON)})
-							existingAltTags["aiAssist:unbait"] = true
-							assistTagsAdded++
-						} else {
-							log.Printf("[WARN] credo-ingest-article: failed to marshal unbait: %v", err)
-						}
-					}
-				}
-
-				if assistTagsAdded > 0 {
-					log.Printf("[INFO] credo-ingest-article: added %d AI assist tags to event", assistTagsAdded)
-					tagsAdded = true
 				}
 			}
 
-			if tagsAdded {
-				return &updated, nil
+			if assistTagsAdded > 0 {
+				log.Printf("[INFO] credo-ingest-article: added %d AI assist tags to event", assistTagsAdded)
+				tagsAdded = true
 			}
 		}
 
-		if len(out.Result.Features) > 0 {
-			log.Printf("[INFO] credo-ingest-article: detected features: %v", out.Result.Features)
+		if tagsAdded {
+			return &updated, nil
 		}
+	}
+
+	if len(out.Features) > 0 {
+		log.Printf("[INFO] credo-ingest-article: detected features: %v", out.Features)
 	}
 
 	// Return original event if no tags were added

@@ -17,101 +17,59 @@ X-Auth-Key: <backend-secret-key>
 ### Request Body
 ```go
 type CredoIngestArticleRequest struct {
-	Params struct {
-		// Required: Article URL extracted from Nostr event
-		URL string `json:"url"`
-		
-		// Optional: Article title (defaults to empty string)
-		Title string `json:"title,omitempty"`
-		
-		// Required: Article content extracted from Nostr event
-		Content string `json:"content"`
-		
-		// Optional: Article language code (defaults to "en")
-		Language string `json:"language,omitempty"`
-		
-		// Optional: Nostr event details for context
-		ByEvent *struct {
-			Event struct {
-				Content string `json:"content"`
-				// Add other NostrEvent fields if needed
-			} `json:"event"`
-			LinkedEvents []interface{} `json:"linkedEvents,omitempty"`
-		} `json:"byEvent,omitempty"`
-	} `json:"params"`
-	
-	Options struct {
-		// Optional: Backend authentication key override
-		AuthKey string `json:"authKey,omitempty"`
-		
-		// Optional: Retry configuration
-		// Format: false, number, or "number|string;different-model|same-model"
-		Retry interface{} `json:"retry,omitempty"`
-	} `json:"options"`
-	
-	// Optional: Additional hints for the article processing
-	Hints []string `json:"hints,omitempty"`
-	
-	// Optional: Timestamp in milliseconds
-	TimeMs int64 `json:"timeMs,omitempty"`
+	// Required: Article URL extracted from Nostr event
+	URL string `json:"url"`
+	// Optional: Article title (defaults to empty string)
+	Title string `json:"title,omitempty"`
+	// Required: Article content extracted from Nostr event
+	Content string `json:"content"`
+	// Optional: Article language code (defaults to "en")
+	Language string `json:"language,omitempty"`
 }
 ```
 
 ### Validation Rules
-- `params.url` must be provided and non-empty
-- `params.content` must be provided (can be empty string)
-- At least one of the following should contain meaningful content:
-  - `params.content` (non-empty)
-  - `params.byEvent` with valid event content
+- `url` must be provided and non-empty
+- `content` must be provided (can be empty string)
 
 ## Response
 
 ### Success Response
 ```go
 type CredoIngestArticleResponse struct {
-	Success bool `json:"success"`
-	Result *struct {
-		// Hash-based article ID (only if article was created)
-		ArticleId string `json:"articleId,omitempty"`
+	Success   bool     `json:"success"`
+	Tags      []string `json:"tags,omitempty"` // Root level tags array from API response
+	ArticleId string   `json:"articleId,omitempty"`
+	Features  []string `json:"features,omitempty"`
+	Assists   *struct {
+		GetFeatures *struct {
+			Features                        []string `json:"features"`
+			EstimatedReadTimeMinutes        int      `json:"estimatedReadTimeMinutes"`
+			TopicHashTags                   []string `json:"topicHashTags"` // hashtags, including #
+			Clarity                         string   `json:"clarity"`
+			LanguageCode                    string   `json:"languageCode"`
+			Tone                           string   `json:"tone"`
+			Length                         string   `json:"length"`
+			Complexity                     string   `json:"complexity"`
+			AnalysisSummaryInUserLanguage  string   `json:"analysisSummaryInUserLanguage"`
+		} `json:"getFeatures,omitempty"`
 		
-		// AI-detected features (e.g., ["unbait"])
-		Features []string `json:"features,omitempty"`
-		
-		// AI analysis results
-		Assists *struct {
-			// Always included - article analysis results
-			GetFeatures *struct {
-				Features                        []string `json:"features"`
-				EstimatedReadTimeMinutes        int      `json:"estimatedReadTimeMinutes"`
-				TopicHashTags                   []string `json:"topicHashTags"` // hashtags, including #
-				Clarity                         string   `json:"clarity"`
-				LanguageCode                    string   `json:"languageCode"`
-				Tone                           string   `json:"tone"`
-				Length                         string   `json:"length"`
-				Complexity                     string   `json:"complexity"`
-				AnalysisSummaryInUserLanguage  string   `json:"analysisSummaryInUserLanguage"`
-			} `json:"getFeatures,omitempty"`
-			
-			// Only if clickbait was detected
-			Unbait *struct {
-				ClickbaitScore int    `json:"clickbaitScore"`
-				Feature        string `json:"feature"`
-				Meta           struct {
-					ArticleMeta struct {
-						Title  string        `json:"title"`
-						Links  []interface{} `json:"links"`
-						Images []interface{} `json:"images"`
-					} `json:"articleMeta"`
-				} `json:"meta"`
-				UnbaitAnswer string `json:"unbaitAnswer"`
-				Why          string `json:"why"`
-				UnbaitTitle  string `json:"unbaitTitle"`
-			} `json:"unbait,omitempty"`
-		} `json:"assists,omitempty"`
-		
-		// Success message with optional article ID
-		Message string `json:"message"`
-	} `json:"result"`
+		// Only if clickbait was detected
+		Unbait *struct {
+			ClickbaitScore int    `json:"clickbaitScore"`
+			Feature        string `json:"feature"`
+			Meta           struct {
+				ArticleMeta struct {
+					Title  string        `json:"title"`
+					Links  []interface{} `json:"links"`
+					Images []interface{} `json:"images"`
+				} `json:"articleMeta"`
+			} `json:"meta"`
+			UnbaitAnswer string `json:"unbaitAnswer"`
+			Why          string `json:"why"`
+			UnbaitTitle  string `json:"unbaitTitle"`
+		} `json:"unbait,omitempty"`
+	} `json:"assists,omitempty"`
 	Message string `json:"message,omitempty"`
 	TimeMs  int64  `json:"timeMs,omitempty"`
 }
@@ -132,21 +90,10 @@ type ErrorResponse struct {
 ### Request
 ```json
 {
-	"params": {
-		"url": "https://example.com/bitcoin-news",
-		"title": "You Won't Believe This Bitcoin Discovery!",
-		"content": "Bitcoin has seen increased institutional adoption in 2024.",
-		"language": "en",
-		"byEvent": {
-			"event": {
-				"content": "Check out this article about Bitcoin: https://example.com/bitcoin-news"
-			}
-		}
-	},
-	"options": {
-		"authKey": "backend-secret-key"
-	},
-	"timeMs": 1648176000000
+	"url": "https://example.com/bitcoin-news",
+	"title": "You Won't Believe This Bitcoin Discovery!",
+	"content": "Bitcoin has seen increased institutional adoption in 2024.",
+	"language": "en"
 }
 ```
 
@@ -154,38 +101,37 @@ type ErrorResponse struct {
 ```json
 {
 	"success": true,
-	"result": {
-		"articleId": "abc123",
-		"features": ["unbait"],
-		"assists": {
-			"getFeatures": {
-				"features": ["unbait"],
-				"estimatedReadTimeMinutes": 1,
-				"topicHashTags": ["#bitcoin", "#cryptocurrency", "#adoption"],
-				"clarity": "high",
-				"languageCode": "en",
-				"tone": "informative",
-				"length": "short",
-				"complexity": "low",
-				"analysisSummaryInUserLanguage": "Article discusses Bitcoin adoption trends"
-			},
-			"unbait": {
-				"clickbaitScore": 1,
-				"feature": "unbait",
-				"meta": {
-					"articleMeta": {
-						"title": "You Won't Believe This Bitcoin Discovery!",
-						"links": [],
-						"images": []
-					}
-				},
-				"unbaitAnswer": "Bitcoin has seen increased institutional adoption in 2024.",
-				"why": "The title uses sensational language to create intrigue",
-				"unbaitTitle": "Bitcoin Sees Increased Institutional Adoption in 2024"
-			}
+	"articleId": "abc123",
+	"features": ["unbait"],
+	"tags": ["#bitcoin", "#cryptocurrency", "#adoption"],
+	"assists": {
+		"getFeatures": {
+			"features": ["unbait"],
+			"estimatedReadTimeMinutes": 1,
+			"topicHashTags": ["#bitcoin", "#cryptocurrency"],
+			"clarity": "high",
+			"languageCode": "en",
+			"tone": "informative",
+			"length": "short",
+			"complexity": "low",
+			"analysisSummaryInUserLanguage": "Article discusses Bitcoin adoption trends"
 		},
-		"message": "Article processed successfully (ID: abc123)"
+		"unbait": {
+			"clickbaitScore": 1,
+			"feature": "unbait",
+			"meta": {
+				"articleMeta": {
+					"title": "You Won't Believe This Bitcoin Discovery!",
+					"links": [],
+					"images": []
+				}
+			},
+			"unbaitAnswer": "Bitcoin has seen increased institutional adoption in 2024.",
+			"why": "The title uses sensational language to create intrigue",
+			"unbaitTitle": "Bitcoin Sees Increased Institutional Adoption in 2024"
+		}
 	},
+	"message": "Article processed successfully (ID: abc123)",
 	"timeMs": 1648176000000
 }
 ```
@@ -233,16 +179,15 @@ The hook extracts article information from Nostr events using the following logi
 - Embeds complete AI analysis results as JSON-encoded "alt" tags:
   - `aiAssist:get-features` - always included when analysis succeeds
   - `aiAssist:unbait` - only included when clickbait is detected
-- Deduplicates tags to avoid adding existing ones
+- Replaces existing "t" tags with the new `tags` array from the API response
 
 ### Tag Processing Details
 
-#### Topic Tags (from `topicHashTags`)
-Topic hashtags are added as standard Nostr "t" tags:
+#### Topic Tags (from root `tags` array)
+The root-level `tags` array from the response is used to replace all existing "t" tags on the Nostr event.
 - Format: `["t", "<tag_name>"]`
-- The "#" prefix is automatically stripped from hashtags
+- The "#" prefix is automatically stripped from tags
 - Example: `#bitcoin` becomes `["t", "bitcoin"]`
-- Deduplication prevents adding tags that already exist
 
 #### AI Assist Tags (from analysis results)
 AI analysis results are embedded as complete JSON objects in "alt" tags:
@@ -283,11 +228,10 @@ For a clickbait article about Bitcoin, the event might include:
 5. Authentication is handled via backend keys in headers
 6. The response includes comprehensive AI analysis results when successful
 7. Articles are only persisted if they match configured topics of interest
-8. **Topic Tags**: Hashtags from `topicHashTags` are added as "t" tags with "#" stripped
+8. **Tag Replacement**: The root `tags` array from the API response replaces all existing "t" tags on the event.
 9. **AI Assist Tags**: Complete analysis results are embedded as JSON in "alt" tags:
    - `aiAssist:get-features` - complete getFeatures analysis (always included)
    - `aiAssist:unbait` - complete unbait analysis (when clickbait detected)
 10. JSON embedding preserves all analysis data without creating custom schemas
 11. Tag deduplication prevents adding tags that already exist on the event
-12. Both "t" and "alt" tag types follow standard Nostr tag format: `[type, key, value]`
-13. The hook provides detailed logging for debugging and monitoring
+12. Both "t" and "alt" tag types follow standard Nostr tag format: `
