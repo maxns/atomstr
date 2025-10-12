@@ -56,7 +56,7 @@ type CredoIngestArticleResponse struct {
 		
 		// Only if clickbait was detected
 		Unbait *struct {
-			ClickbaitScore int    `json:"clickbaitScore"`
+			ClickbaitScore float64 `json:"clickbaitScore"`
 			Feature        string `json:"feature"`
 			Meta           struct {
 				ArticleMeta struct {
@@ -117,7 +117,7 @@ type ErrorResponse struct {
 			"analysisSummaryInUserLanguage": "Article discusses Bitcoin adoption trends"
 		},
 		"unbait": {
-			"clickbaitScore": 1,
+			"clickbaitScore": 0.1,
 			"feature": "unbait",
 			"meta": {
 				"articleMeta": {

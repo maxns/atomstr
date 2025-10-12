@@ -87,8 +87,8 @@ type credoIngestArticleResponse struct {
 			AnalysisSummaryInUserLanguage string   `json:"analysisSummaryInUserLanguage"`
 		} `json:"getFeatures,omitempty"`
 		Unbait *struct {
-			ClickbaitScore int    `json:"clickbaitScore"`
-			Feature        string `json:"feature"`
+			ClickbaitScore float64 `json:"clickbaitScore"`
+			Feature        string  `json:"feature"`
 			Meta           struct {
 				ArticleMeta struct {
 					Title  string        `json:"title"`
@@ -275,7 +275,7 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 
 			// Add unbait assist as JSON if available
 			if out.Assists.Unbait != nil {
-				log.Printf("[DEBUG] credo-ingest-article: unbait assist found - clickbaitScore: %d, answer: %s", out.Assists.Unbait.ClickbaitScore, out.Assists.Unbait.UnbaitAnswer)
+				log.Printf("[DEBUG] credo-ingest-article: unbait assist found - clickbaitScore: %.1f, answer: %s", out.Assists.Unbait.ClickbaitScore, out.Assists.Unbait.UnbaitAnswer)
 
 				if !existingAltTags["aiAssist:unbait"] {
 					if unbaitJSON, err := json.Marshal(out.Assists.Unbait); err == nil {
