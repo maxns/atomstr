@@ -65,7 +65,8 @@ func NewCredoIngestArticleHookFromConfig(config map[string]interface{}) (NostrEv
 type credoIngestArticleRequest struct {
 	URL      string `json:"url"`
 	Title    string `json:"title,omitempty"`
-	Content  string `json:"content"`
+	Content  string `json:"content,omitempty"`
+	Excerpt  string `json:"excerpt,omitempty"`
 	Language string `json:"language,omitempty"`
 }
 
@@ -122,14 +123,12 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 	// Use the first URL found
 	articleURL := urls[0]
 
-	// Extract title from content (first line or derive from URL)
-	title := extractTitleFromContent(event.Content, articleURL)
-
 	// Build request
 	reqBody := credoIngestArticleRequest{}
 	reqBody.URL = articleURL
-	reqBody.Title = title
-	reqBody.Content = event.Content
+	reqBody.Title = feedPost.Title
+	reqBody.Content = "" // We don't have full article content, so pass empty
+	reqBody.Excerpt = feedPost.Description
 	reqBody.Language = "en" // Default to English
 
 	buf, err := json.Marshal(&reqBody)
@@ -159,12 +158,12 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 		req.Header.Set(k, v)
 	}
 
-	log.Printf("[DEBUG] credo-ingest-article request: URL=%s, Title=%s", articleURL, title)
+	log.Printf("[DEBUG] credo-ingest-article request: URL=%s, Title=%s", articleURL, feedPost.Title)
 
 	resp, err := h.client.Do(req)
 	if err != nil {
 		log.Printf("[ERROR] credo-ingest-article: request failed: %v", err)
-		return event, nil // Don't fail the event publishing
+		return event, err
 	}
 	defer resp.Body.Close()
 
@@ -177,7 +176,7 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 			respMsg = string(bodyBytes)
 			log.Printf("[ERROR] credo-ingest-article non-2xx response (%s): %s", resp.Status, respMsg)
 		}
-		return event, nil // Don't fail the event publishing
+		return event, errors.New("credo-ingest-article returned non-2xx status: " + resp.Status)
 	}
 
 	// Read the full response body for debugging
@@ -188,7 +187,7 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 	if err := json.Unmarshal(bodyBytes, &out); err != nil {
 		log.Printf("[ERROR] credo-ingest-article: failed to decode response: %v", err)
 		log.Printf("[ERROR] credo-ingest-article: raw response was: %s", string(bodyBytes))
-		return event, nil // Don't fail the event publishing
+		return event, err
 	}
 
 	log.Printf("[DEBUG] credo-ingest-article: parsed response - success: %t, message: %s", out.Success, out.Message)
@@ -196,7 +195,7 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 
 	if !out.Success {
 		log.Printf("[ERROR] credo-ingest-article returned error: %s", out.Message)
-		return event, nil // Don't fail the event publishing
+		return event, errors.New("credo-ingest-article returned error: " + out.Message)
 	}
 
 	// Log successful processing and extract tags
@@ -248,6 +247,8 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 
 			log.Printf("[INFO] credo-ingest-article: replaced event tags with %d API-provided tags", addedCount)
 			tagsAdded = true
+		} else {
+			log.Printf("[WARN] credo-ingest-article: no tags provided by API")
 		}
 
 		// Add AI assist results as "alt" tags with JSON-encoded feature objects
@@ -326,42 +327,4 @@ func extractURLsFromContent(content string) []string {
 func isValidURL(str string) bool {
 	u, err := url.Parse(str)
 	return err == nil && u.Scheme != "" && u.Host != ""
-}
-
-// extractTitleFromContent attempts to extract a title from content
-func extractTitleFromContent(content, articleURL string) string {
-	lines := strings.Split(strings.TrimSpace(content), "\n")
-
-	// Look for the first non-URL line as potential title
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		// Skip if the line is just the URL
-		if strings.Contains(line, articleURL) && len(line) < len(articleURL)+20 {
-			continue
-		}
-		// Use this line as title if it's not too long and doesn't look like a URL
-		if len(line) > 10 && len(line) < 200 && !urlRegex.MatchString(line) {
-			return line
-		}
-	}
-
-	// Fallback: derive title from URL
-	if u, err := url.Parse(articleURL); err == nil {
-		// Use the path or host as fallback title
-		if u.Path != "" && u.Path != "/" {
-			path := strings.Trim(u.Path, "/")
-			// Convert dashes/underscores to spaces and title case
-			title := strings.ReplaceAll(path, "-", " ")
-			title = strings.ReplaceAll(title, "_", " ")
-			if len(title) > 0 {
-				return strings.Title(title)
-			}
-		}
-		return u.Host
-	}
-
-	return "" // Empty title as fallback
 }
