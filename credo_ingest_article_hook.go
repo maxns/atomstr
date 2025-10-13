@@ -8,9 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
@@ -107,26 +105,12 @@ type credoIngestArticleResponse struct {
 	TimeMs  int64  `json:"timeMs,omitempty"`
 }
 
-// URL regex pattern to extract URLs from content
-var urlRegex = regexp.MustCompile(`https?://[^\s]+`)
-
 func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStruct, feedPost feedPostStruct, event *nostr.Event) (*nostr.Event, error) {
 	log.Printf("[DEBUG] credo-ingest-article: processing event %s with content length %d", event.ID, len(event.Content))
 
-	// Extract URLs from the event content
-	urls := extractURLsFromContent(event.Content)
-	log.Printf("[DEBUG] credo-ingest-article: found %d URLs in content", len(urls))
-	if len(urls) == 0 {
-		log.Printf("[DEBUG] credo-ingest-article: no URLs found in event content, skipping")
-		return event, nil
-	}
-
-	// Use the first URL found
-	articleURL := urls[0]
-
 	// Build request
 	reqBody := credoIngestArticleRequest{}
-	reqBody.URL = articleURL
+	reqBody.URL = feedPost.Link
 	reqBody.Title = feedPost.Title
 	reqBody.Content = "" // We don't have full article content, so pass empty
 	reqBody.Excerpt = feedPost.Description
@@ -160,7 +144,7 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 		req.Header.Set(k, v)
 	}
 
-	log.Printf("[DEBUG] credo-ingest-article request: URL=%s, Title=%s", articleURL, feedPost.Title)
+	log.Printf("[DEBUG] credo-ingest-article request: URL=%s, Title=%s", feedPost.Link, feedPost.Title)
 
 	resp, err := h.client.Do(req)
 	if err != nil {
@@ -309,24 +293,4 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 	// Return original event if no tags were added
 	log.Printf("[DEBUG] credo-ingest-article: completed processing for event %s", event.ID)
 	return event, nil
-}
-
-// extractURLsFromContent extracts HTTP/HTTPS URLs from text content
-func extractURLsFromContent(content string) []string {
-	matches := urlRegex.FindAllString(content, -1)
-	var urls []string
-	for _, match := range matches {
-		// Clean up URL (remove trailing punctuation)
-		cleaned := strings.TrimRight(match, ".,!?;:")
-		if isValidURL(cleaned) {
-			urls = append(urls, cleaned)
-		}
-	}
-	return urls
-}
-
-// isValidURL checks if a string is a valid URL
-func isValidURL(str string) bool {
-	u, err := url.Parse(str)
-	return err == nil && u.Scheme != "" && u.Host != ""
 }
