@@ -85,7 +85,7 @@ func (a *Atomstr) processFeedPost(feedItem feedStruct, feedPost *gofeed.Item) {
 	// Check if we should publish this post (age, duplicates, etc.)
 	shouldPublish, reason := a.shouldPublishPost(feedItem, feedPost)
 	if !shouldPublish {
-		log.Println("[DEBUG] Skipping post from", feedItem.Url+":", reason)
+		log.Println("[TRACE] Skipping post from", feedItem.Url+":", reason)
 		return
 	}
 

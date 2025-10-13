@@ -3,3 +3,4 @@ atomstr
 .DS_Store
 credo_ingest_article_hook.go
 atomstr.db
+ext/docs/api

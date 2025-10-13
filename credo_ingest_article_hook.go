@@ -65,9 +65,10 @@ func NewCredoIngestArticleHookFromConfig(config map[string]interface{}) (NostrEv
 type credoIngestArticleRequest struct {
 	URL      string `json:"url"`
 	Title    string `json:"title,omitempty"`
-	Content  string `json:"content,omitempty"`
+	Content  string `json:"content"`
 	Excerpt  string `json:"excerpt,omitempty"`
 	Language string `json:"language,omitempty"`
+	GUID     string `json:"GUID,omitempty"`
 }
 
 type credoIngestArticleResponse struct {
@@ -130,6 +131,7 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 	reqBody.Content = "" // We don't have full article content, so pass empty
 	reqBody.Excerpt = feedPost.Description
 	reqBody.Language = "en" // Default to English
+	reqBody.GUID = feedPost.GUID
 
 	buf, err := json.Marshal(&reqBody)
 	if err != nil {
