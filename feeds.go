@@ -102,9 +102,9 @@ func (a *Atomstr) processFeedPost(feedItem feedStruct, feedPost *gofeed.Item, at
 	//fmt.Println(feedPost.PublishedParsed)
 
 	// Check if we should publish this post (age, duplicates, etc.)
-	shouldPublish, reason := a.shouldPublishPost(feedItem, feedPost)
+	shouldPublish, _ := a.shouldPublishPost(feedItem, feedPost)
 	if !shouldPublish {
-		log.Println("[TRACE] Skipping post from", feedItem.Url+":", reason)
+		// log.Println("[TRACE] Skipping post from", feedItem.Url+":", reason)
 		return
 	}
 
@@ -203,7 +203,7 @@ func (a *Atomstr) processFeedPost(feedItem feedStruct, feedPost *gofeed.Item, at
 
 	if !noPub {
 		publishedCount, errCount := nostrPostItem(ev)
-		log.Printf("[DEBUG] Published post to %d / %d relays\n", publishedCount, errCount+publishedCount)
+		log.Printf("[INFO] Published post to %d / %d relays\n", publishedCount, errCount+publishedCount)
 		shouldRecord = publishedCount > 0
 	} else {
 		log.Println("[DEBUG] not publishing post", ev)
