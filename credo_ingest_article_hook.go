@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mmcdole/gofeed/atom"
+	"github.com/mmcdole/gofeed/rss"
 	"github.com/nbd-wtf/go-nostr"
 )
 
@@ -67,6 +69,101 @@ type credoIngestArticleRequest struct {
 	Excerpt  string `json:"excerpt,omitempty"`
 	Language string `json:"language,omitempty"`
 	GUID     string `json:"GUID,omitempty"`
+	// Full atom details as per API specification - raw native data for backend parsing
+	AtomMeta *credoAtomMeta `json:"atomMeta,omitempty"`
+}
+
+// credoAtomMeta represents the atomMeta structure as per API specification
+type credoAtomMeta struct {
+	Feed *credoAtomFeed  `json:"feed,omitempty"`
+	Item *credoAtomEntry `json:"item,omitempty"`
+}
+
+// credoAtomFeed represents an Atom feed as per RFC 4287
+type credoAtomFeed struct {
+	ID           string               `json:"id,omitempty"`
+	Title        *credoAtomText       `json:"title,omitempty"`
+	Updated      string               `json:"updated,omitempty"`
+	Subtitle     *credoAtomText       `json:"subtitle,omitempty"`
+	Links        []*credoAtomLink     `json:"links,omitempty"`
+	Language     string               `json:"language,omitempty"`
+	Generator    *credoAtomGenerator  `json:"generator,omitempty"`
+	Icon         string               `json:"icon,omitempty"`
+	Logo         string               `json:"logo,omitempty"`
+	Rights       *credoAtomText       `json:"rights,omitempty"`
+	Contributors []*credoAtomPerson   `json:"contributors,omitempty"`
+	Authors      []*credoAtomPerson   `json:"authors,omitempty"`
+	Categories   []*credoAtomCategory `json:"categories,omitempty"`
+}
+
+// credoAtomEntry represents an Atom entry as per RFC 4287
+type credoAtomEntry struct {
+	ID           string               `json:"id,omitempty"`
+	Title        *credoAtomText       `json:"title,omitempty"`
+	Updated      string               `json:"updated,omitempty"`
+	Summary      *credoAtomText       `json:"summary,omitempty"`
+	Authors      []*credoAtomPerson   `json:"authors,omitempty"`
+	Contributors []*credoAtomPerson   `json:"contributors,omitempty"`
+	Categories   []*credoAtomCategory `json:"categories,omitempty"`
+	Links        []*credoAtomLink     `json:"links,omitempty"`
+	Rights       *credoAtomText       `json:"rights,omitempty"`
+	Published    string               `json:"published,omitempty"`
+	Source       *credoAtomSource     `json:"source,omitempty"`
+	Content      *credoAtomContent    `json:"content,omitempty"`
+}
+
+// Supporting types for atom structures
+type credoAtomText struct {
+	Type  string `json:"type,omitempty"`
+	Value string `json:"value,omitempty"`
+}
+
+type credoAtomPerson struct {
+	Name  string `json:"name,omitempty"`
+	URI   string `json:"uri,omitempty"`
+	Email string `json:"email,omitempty"`
+}
+
+type credoAtomCategory struct {
+	Term   string `json:"term,omitempty"`
+	Scheme string `json:"scheme,omitempty"`
+	Label  string `json:"label,omitempty"`
+}
+
+type credoAtomLink struct {
+	Href     string `json:"href,omitempty"`
+	Rel      string `json:"rel,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Hreflang string `json:"hreflang,omitempty"`
+	Title    string `json:"title,omitempty"`
+	Length   string `json:"length,omitempty"`
+}
+
+type credoAtomGenerator struct {
+	Value   string `json:"value,omitempty"`
+	URI     string `json:"uri,omitempty"`
+	Version string `json:"version,omitempty"`
+}
+
+type credoAtomContent struct {
+	Type  string `json:"type,omitempty"`
+	Value string `json:"value,omitempty"`
+	Src   string `json:"src,omitempty"`
+}
+
+type credoAtomSource struct {
+	Title        *credoAtomText       `json:"title,omitempty"`
+	ID           string               `json:"id,omitempty"`
+	Updated      string               `json:"updated,omitempty"`
+	Subtitle     *credoAtomText       `json:"subtitle,omitempty"`
+	Links        []*credoAtomLink     `json:"links,omitempty"`
+	Generator    *credoAtomGenerator  `json:"generator,omitempty"`
+	Icon         string               `json:"icon,omitempty"`
+	Logo         string               `json:"logo,omitempty"`
+	Rights       *credoAtomText       `json:"rights,omitempty"`
+	Contributors []*credoAtomPerson   `json:"contributors,omitempty"`
+	Authors      []*credoAtomPerson   `json:"authors,omitempty"`
+	Categories   []*credoAtomCategory `json:"categories,omitempty"`
 }
 
 type credoIngestArticleResponse struct {
@@ -108,14 +205,23 @@ type credoIngestArticleResponse struct {
 func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStruct, feedPost feedPostStruct, event *nostr.Event) (*nostr.Event, error) {
 	log.Printf("[DEBUG] credo-ingest-article: processing event %s with content length %d", event.ID, len(event.Content))
 
-	// Build request
+	// Build request with raw atom feed data for backend parsing
 	reqBody := credoIngestArticleRequest{}
 	reqBody.URL = feedPost.Link
 	reqBody.Title = feedPost.Title
-	reqBody.Content = "" // We don't have full article content, so pass empty
+	reqBody.Content = feedPost.Content // Use actual content if available
 	reqBody.Excerpt = feedPost.Description
 	reqBody.Language = "en" // Default to English
 	reqBody.GUID = feedPost.GUID
+
+	// Build comprehensive atomMeta structure from native feed data
+	// Let the backend parse and extract enhanced fields from this raw data
+	if feedPost.FeedType == "atom" && feedPost.AtomEntry != nil {
+		reqBody.AtomMeta = buildAtomMeta(feedPost.AtomFeed, feedPost.AtomEntry)
+	} else if feedPost.FeedType == "rss" && feedPost.RSSItem != nil {
+		// Map RSS to atom format for the API
+		reqBody.AtomMeta = buildAtomMetaFromRSS(feedPost.RSSFeed, feedPost.RSSItem)
+	}
 
 	buf, err := json.Marshal(&reqBody)
 	if err != nil {
@@ -144,7 +250,9 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 		req.Header.Set(k, v)
 	}
 
-	log.Printf("[DEBUG] credo-ingest-article request: URL=%s, Title=%s", feedPost.Link, feedPost.Title)
+	log.Printf("[DEBUG] credo-ingest-article request: URL=%s, Title=%s, ContentLength=%d, FeedType=%s, HasAtomMeta=%v",
+		feedPost.Link, feedPost.Title, len(feedPost.Content), feedPost.FeedType,
+		reqBody.AtomMeta != nil)
 
 	resp, err := h.client.Do(req)
 	if err != nil {
@@ -184,7 +292,7 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 		return event, errors.New("credo-ingest-article returned error: " + out.Message)
 	}
 
-	// Log successful processing and extract tags
+	// Log successful processing
 	log.Printf("[DEBUG] credo-ingest-article: full response structure - articleId: %s, features: %v", out.ArticleId, out.Features)
 
 	if out.ArticleId != "" {
@@ -193,96 +301,87 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 		log.Printf("[INFO] credo-ingest-article: article processed (no ID - not persisted)")
 	}
 
+	// Extract and add topic hashtags as "t" tags from API response
+	updated := *event
+	tagsAdded := false
+
+	// Replace tags array with tags from API response if available
+	if len(out.Tags) > 0 {
+		// Clear existing "t" tags and replace with API-provided tags
+		var newTags []nostr.Tag
+
+		// Keep non-"t" tags
+		for _, tag := range updated.Tags {
+			if len(tag) >= 2 && tag[0] == "t" {
+				// Skip existing "t" tags - they will be replaced
+				continue
+			}
+			newTags = append(newTags, tag)
+		}
+
+		// Add new tags from API response (strip # prefix)
+		addedCount := 0
+		for _, tag := range out.Tags {
+			// Strip # prefix and clean up
+			cleanTag := strings.TrimSpace(strings.TrimPrefix(tag, "#"))
+			if cleanTag == "" {
+				continue
+			}
+			newTags = append(newTags, nostr.Tag{"t", cleanTag})
+			addedCount++
+		}
+
+		updated.Tags = newTags
+
+		log.Printf("[INFO] credo-ingest-article: replaced event tags with %d API-provided tags", addedCount)
+		tagsAdded = true
+	} else {
+		log.Printf("[WARN] credo-ingest-article: no tags provided by API")
+	}
+
+	// Add AI assist results as "alt" tags with JSON-encoded feature objects
 	if out.Assists != nil && out.Assists.GetFeatures != nil {
 		features := out.Assists.GetFeatures
-		log.Printf("[DEBUG] credo-ingest-article: assists structure: %+v", out.Assists)
-		log.Printf("[DEBUG] credo-ingest-article: getFeatures - features: %v, readTime: %.1fm, hashtags: %v, clarity: %s, tone: %s, language: %s", features.Features, features.EstimatedReadTimeMinutes, features.TopicHashTags, features.Clarity, features.Tone, features.LanguageCode)
-		log.Printf("[INFO] credo-ingest-article: analysis complete - tags: %v, readTime: %.1fm, clarity: %s", features.TopicHashTags, features.EstimatedReadTimeMinutes, features.Clarity)
 
-		// Extract and add topic hashtags as "t" tags and unbait data as "alt" tags
-		updated := *event
-		tagsAdded := false
-
-		// Replace tags array with tags from API response if available
-		if len(out.Tags) > 0 {
-			// Clear existing "t" tags and replace with API-provided tags
-			var newTags []nostr.Tag
-
-			// Keep non-"t" tags
-			for _, tag := range updated.Tags {
-				if len(tag) >= 2 && tag[0] == "t" {
-					// Skip existing "t" tags - they will be replaced
-					continue
-				}
-				newTags = append(newTags, tag)
+		// Get existing "alt" tags to avoid duplicates
+		existingAltTags := map[string]bool{}
+		for _, tag := range updated.Tags {
+			if len(tag) >= 2 && tag[0] == "alt" {
+				existingAltTags[strings.TrimSpace(tag[1])] = true
 			}
-
-			// Add new tags from API response (strip # prefix)
-			addedCount := 0
-			for _, tag := range out.Tags {
-				// Strip # prefix and clean up
-				cleanTag := strings.TrimSpace(strings.TrimPrefix(tag, "#"))
-				if cleanTag == "" {
-					continue
-				}
-				newTags = append(newTags, nostr.Tag{"t", cleanTag})
-				addedCount++
-			}
-
-			updated.Tags = newTags
-
-			log.Printf("[INFO] credo-ingest-article: replaced event tags with %d API-provided tags", addedCount)
-			tagsAdded = true
-		} else {
-			log.Printf("[WARN] credo-ingest-article: no tags provided by API")
 		}
 
-		// Add AI assist results as "alt" tags with JSON-encoded feature objects
-		if out.Assists != nil {
-			// Get existing "alt" tags to avoid duplicates
-			existingAltTags := map[string]bool{}
-			for _, tag := range updated.Tags {
-				if len(tag) >= 2 && tag[0] == "alt" {
-					existingAltTags[strings.TrimSpace(tag[1])] = true
-				}
+		assistTagsAdded := 0
+
+		// Add get-features assist as JSON
+		if features != nil && !existingAltTags["aiAssist:get-features"] {
+			if featuresJSON, err := json.Marshal(features); err == nil {
+				updated.Tags = append(updated.Tags, nostr.Tag{"alt", "aiAssist:get-features", string(featuresJSON)})
+				existingAltTags["aiAssist:get-features"] = true
+				assistTagsAdded++
+			} else {
+				log.Printf("[WARN] credo-ingest-article: failed to marshal get-features: %v", err)
 			}
+		}
 
-			assistTagsAdded := 0
+		// Add unbait assist as JSON if available
+		if out.Assists.Unbait != nil {
+			log.Printf("[DEBUG] credo-ingest-article: unbait assist found - clickbaitScore: %.1f, answer: %s", out.Assists.Unbait.ClickbaitScore, out.Assists.Unbait.UnbaitAnswer)
 
-			// Add get-features assist as JSON
-			if features != nil && !existingAltTags["aiAssist:get-features"] {
-				if featuresJSON, err := json.Marshal(features); err == nil {
-					updated.Tags = append(updated.Tags, nostr.Tag{"alt", "aiAssist:get-features", string(featuresJSON)})
-					existingAltTags["aiAssist:get-features"] = true
+			if !existingAltTags["aiAssist:unbait"] {
+				if unbaitJSON, err := json.Marshal(out.Assists.Unbait); err == nil {
+					updated.Tags = append(updated.Tags, nostr.Tag{"alt", "aiAssist:unbait", string(unbaitJSON)})
+					existingAltTags["aiAssist:unbait"] = true
 					assistTagsAdded++
 				} else {
-					log.Printf("[WARN] credo-ingest-article: failed to marshal get-features: %v", err)
+					log.Printf("[WARN] credo-ingest-article: failed to marshal unbait: %v", err)
 				}
-			}
-
-			// Add unbait assist as JSON if available
-			if out.Assists.Unbait != nil {
-				log.Printf("[DEBUG] credo-ingest-article: unbait assist found - clickbaitScore: %.1f, answer: %s", out.Assists.Unbait.ClickbaitScore, out.Assists.Unbait.UnbaitAnswer)
-
-				if !existingAltTags["aiAssist:unbait"] {
-					if unbaitJSON, err := json.Marshal(out.Assists.Unbait); err == nil {
-						updated.Tags = append(updated.Tags, nostr.Tag{"alt", "aiAssist:unbait", string(unbaitJSON)})
-						existingAltTags["aiAssist:unbait"] = true
-						assistTagsAdded++
-					} else {
-						log.Printf("[WARN] credo-ingest-article: failed to marshal unbait: %v", err)
-					}
-				}
-			}
-
-			if assistTagsAdded > 0 {
-				log.Printf("[INFO] credo-ingest-article: added %d AI assist tags to event", assistTagsAdded)
-				tagsAdded = true
 			}
 		}
 
-		if tagsAdded {
-			return &updated, nil
+		if assistTagsAdded > 0 {
+			log.Printf("[INFO] credo-ingest-article: added %d AI assist tags to event", assistTagsAdded)
+			tagsAdded = true
 		}
 	}
 
@@ -290,7 +389,426 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 		log.Printf("[INFO] credo-ingest-article: detected features: %v", out.Features)
 	}
 
+	if tagsAdded {
+		return &updated, nil
+	}
+
 	// Return original event if no tags were added
 	log.Printf("[DEBUG] credo-ingest-article: completed processing for event %s", event.ID)
 	return event, nil
+}
+
+// buildAtomMeta constructs the atomMeta structure from native atom feed data
+func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
+	meta := &credoAtomMeta{}
+
+	// Build feed structure
+	if atomFeed != nil {
+		feed := &credoAtomFeed{
+			ID:       atomFeed.ID,
+			Updated:  atomFeed.Updated,
+			Language: atomFeed.Language,
+			Icon:     atomFeed.Icon,
+			Logo:     atomFeed.Logo,
+		}
+
+		// Title
+		if atomFeed.Title != "" {
+			feed.Title = &credoAtomText{
+				Type:  "text",
+				Value: atomFeed.Title,
+			}
+		}
+
+		// Subtitle
+		if atomFeed.Subtitle != "" {
+			feed.Subtitle = &credoAtomText{
+				Type:  "text",
+				Value: atomFeed.Subtitle,
+			}
+		}
+
+		// Rights
+		if atomFeed.Rights != "" {
+			feed.Rights = &credoAtomText{
+				Type:  "text",
+				Value: atomFeed.Rights,
+			}
+		}
+
+		// Generator
+		if atomFeed.Generator != nil {
+			feed.Generator = &credoAtomGenerator{
+				Value:   atomFeed.Generator.Value,
+				URI:     atomFeed.Generator.URI,
+				Version: atomFeed.Generator.Version,
+			}
+		}
+
+		// Links
+		if len(atomFeed.Links) > 0 {
+			feed.Links = make([]*credoAtomLink, len(atomFeed.Links))
+			for i, link := range atomFeed.Links {
+				feed.Links[i] = &credoAtomLink{
+					Href:     link.Href,
+					Rel:      link.Rel,
+					Type:     link.Type,
+					Hreflang: link.Hreflang,
+					Title:    link.Title,
+					Length:   link.Length,
+				}
+			}
+		}
+
+		// Authors
+		if len(atomFeed.Authors) > 0 {
+			feed.Authors = make([]*credoAtomPerson, len(atomFeed.Authors))
+			for i, author := range atomFeed.Authors {
+				feed.Authors[i] = &credoAtomPerson{
+					Name:  author.Name,
+					Email: author.Email,
+					URI:   author.URI,
+				}
+			}
+		}
+
+		// Contributors
+		if len(atomFeed.Contributors) > 0 {
+			feed.Contributors = make([]*credoAtomPerson, len(atomFeed.Contributors))
+			for i, contributor := range atomFeed.Contributors {
+				feed.Contributors[i] = &credoAtomPerson{
+					Name:  contributor.Name,
+					Email: contributor.Email,
+					URI:   contributor.URI,
+				}
+			}
+		}
+
+		// Categories
+		if len(atomFeed.Categories) > 0 {
+			feed.Categories = make([]*credoAtomCategory, len(atomFeed.Categories))
+			for i, category := range atomFeed.Categories {
+				feed.Categories[i] = &credoAtomCategory{
+					Term:   category.Term,
+					Scheme: category.Scheme,
+					Label:  category.Label,
+				}
+			}
+		}
+
+		meta.Feed = feed
+	}
+
+	// Build entry structure
+	if atomEntry != nil {
+		entry := &credoAtomEntry{
+			ID:        atomEntry.ID,
+			Updated:   atomEntry.Updated,
+			Published: atomEntry.Published,
+		}
+
+		// Title
+		if atomEntry.Title != "" {
+			entry.Title = &credoAtomText{
+				Type:  "text",
+				Value: atomEntry.Title,
+			}
+		}
+
+		// Summary
+		if atomEntry.Summary != "" {
+			entry.Summary = &credoAtomText{
+				Type:  "text",
+				Value: atomEntry.Summary,
+			}
+		}
+
+		// Rights
+		if atomEntry.Rights != "" {
+			entry.Rights = &credoAtomText{
+				Type:  "text",
+				Value: atomEntry.Rights,
+			}
+		}
+
+		// Content
+		if atomEntry.Content != nil {
+			contentType := "text"
+			if atomEntry.Content.Type != "" {
+				contentType = atomEntry.Content.Type
+			}
+			entry.Content = &credoAtomContent{
+				Type:  contentType,
+				Value: atomEntry.Content.Value,
+				Src:   atomEntry.Content.Src,
+			}
+		}
+
+		// Authors
+		if len(atomEntry.Authors) > 0 {
+			entry.Authors = make([]*credoAtomPerson, len(atomEntry.Authors))
+			for i, author := range atomEntry.Authors {
+				entry.Authors[i] = &credoAtomPerson{
+					Name:  author.Name,
+					Email: author.Email,
+					URI:   author.URI,
+				}
+			}
+		}
+
+		// Contributors
+		if len(atomEntry.Contributors) > 0 {
+			entry.Contributors = make([]*credoAtomPerson, len(atomEntry.Contributors))
+			for i, contributor := range atomEntry.Contributors {
+				entry.Contributors[i] = &credoAtomPerson{
+					Name:  contributor.Name,
+					Email: contributor.Email,
+					URI:   contributor.URI,
+				}
+			}
+		}
+
+		// Categories
+		if len(atomEntry.Categories) > 0 {
+			entry.Categories = make([]*credoAtomCategory, len(atomEntry.Categories))
+			for i, category := range atomEntry.Categories {
+				entry.Categories[i] = &credoAtomCategory{
+					Term:   category.Term,
+					Scheme: category.Scheme,
+					Label:  category.Label,
+				}
+			}
+		}
+
+		// Links
+		if len(atomEntry.Links) > 0 {
+			entry.Links = make([]*credoAtomLink, len(atomEntry.Links))
+			for i, link := range atomEntry.Links {
+				entry.Links[i] = &credoAtomLink{
+					Href:     link.Href,
+					Rel:      link.Rel,
+					Type:     link.Type,
+					Hreflang: link.Hreflang,
+					Title:    link.Title,
+					Length:   link.Length,
+				}
+			}
+		}
+
+		// Source
+		if atomEntry.Source != nil {
+			source := &credoAtomSource{
+				ID:      atomEntry.Source.ID,
+				Updated: atomEntry.Source.Updated,
+				Icon:    atomEntry.Source.Icon,
+				Logo:    atomEntry.Source.Logo,
+			}
+
+			if atomEntry.Source.Title != "" {
+				source.Title = &credoAtomText{
+					Type:  "text",
+					Value: atomEntry.Source.Title,
+				}
+			}
+
+			if atomEntry.Source.Subtitle != "" {
+				source.Subtitle = &credoAtomText{
+					Type:  "text",
+					Value: atomEntry.Source.Subtitle,
+				}
+			}
+
+			if atomEntry.Source.Rights != "" {
+				source.Rights = &credoAtomText{
+					Type:  "text",
+					Value: atomEntry.Source.Rights,
+				}
+			}
+
+			if atomEntry.Source.Generator != nil {
+				source.Generator = &credoAtomGenerator{
+					Value:   atomEntry.Source.Generator.Value,
+					URI:     atomEntry.Source.Generator.URI,
+					Version: atomEntry.Source.Generator.Version,
+				}
+			}
+
+			if len(atomEntry.Source.Links) > 0 {
+				source.Links = make([]*credoAtomLink, len(atomEntry.Source.Links))
+				for i, link := range atomEntry.Source.Links {
+					source.Links[i] = &credoAtomLink{
+						Href:     link.Href,
+						Rel:      link.Rel,
+						Type:     link.Type,
+						Hreflang: link.Hreflang,
+						Title:    link.Title,
+						Length:   link.Length,
+					}
+				}
+			}
+
+			if len(atomEntry.Source.Authors) > 0 {
+				source.Authors = make([]*credoAtomPerson, len(atomEntry.Source.Authors))
+				for i, author := range atomEntry.Source.Authors {
+					source.Authors[i] = &credoAtomPerson{
+						Name:  author.Name,
+						Email: author.Email,
+						URI:   author.URI,
+					}
+				}
+			}
+
+			if len(atomEntry.Source.Contributors) > 0 {
+				source.Contributors = make([]*credoAtomPerson, len(atomEntry.Source.Contributors))
+				for i, contributor := range atomEntry.Source.Contributors {
+					source.Contributors[i] = &credoAtomPerson{
+						Name:  contributor.Name,
+						Email: contributor.Email,
+						URI:   contributor.URI,
+					}
+				}
+			}
+
+			if len(atomEntry.Source.Categories) > 0 {
+				source.Categories = make([]*credoAtomCategory, len(atomEntry.Source.Categories))
+				for i, category := range atomEntry.Source.Categories {
+					source.Categories[i] = &credoAtomCategory{
+						Term:   category.Term,
+						Scheme: category.Scheme,
+						Label:  category.Label,
+					}
+				}
+			}
+
+			entry.Source = source
+		}
+
+		meta.Item = entry
+	}
+
+	return meta
+}
+
+// buildAtomMetaFromRSS maps RSS feed data to atom format for API compatibility
+func buildAtomMetaFromRSS(rssFeed *rss.Feed, rssItem *rss.Item) *credoAtomMeta {
+	meta := &credoAtomMeta{}
+
+	// Build feed structure from RSS
+	if rssFeed != nil {
+		feed := &credoAtomFeed{
+			ID:       rssFeed.Link,
+			Updated:  rssFeed.LastBuildDate,
+			Language: rssFeed.Language,
+		}
+
+		// Title
+		if rssFeed.Title != "" {
+			feed.Title = &credoAtomText{
+				Type:  "text",
+				Value: rssFeed.Title,
+			}
+		}
+
+		// Description as subtitle
+		if rssFeed.Description != "" {
+			feed.Subtitle = &credoAtomText{
+				Type:  "text",
+				Value: rssFeed.Description,
+			}
+		}
+
+		// Generator
+		if rssFeed.Generator != "" {
+			feed.Generator = &credoAtomGenerator{
+				Value: rssFeed.Generator,
+			}
+		}
+
+		// Categories
+		if len(rssFeed.Categories) > 0 {
+			feed.Categories = make([]*credoAtomCategory, len(rssFeed.Categories))
+			for i, category := range rssFeed.Categories {
+				feed.Categories[i] = &credoAtomCategory{
+					Term:   category.Value,
+					Scheme: category.Domain,
+				}
+			}
+		}
+
+		// Image as logo
+		if rssFeed.Image != nil {
+			feed.Logo = rssFeed.Image.URL
+		}
+
+		meta.Feed = feed
+	}
+
+	// Build entry structure from RSS item
+	if rssItem != nil {
+		entry := &credoAtomEntry{
+			ID:      rssItem.Link,
+			Updated: rssItem.PubDate,
+		}
+
+		// Title
+		if rssItem.Title != "" {
+			entry.Title = &credoAtomText{
+				Type:  "text",
+				Value: rssItem.Title,
+			}
+		}
+
+		// Description as summary
+		if rssItem.Description != "" {
+			entry.Summary = &credoAtomText{
+				Type:  "text",
+				Value: rssItem.Description,
+			}
+		}
+
+		// Content
+		if rssItem.Content != "" {
+			entry.Content = &credoAtomContent{
+				Type:  "text",
+				Value: rssItem.Content,
+			}
+		}
+
+		// Author
+		if rssItem.Author != "" {
+			entry.Authors = []*credoAtomPerson{
+				{
+					Name: rssItem.Author,
+				},
+			}
+		}
+
+		// Categories
+		if len(rssItem.Categories) > 0 {
+			entry.Categories = make([]*credoAtomCategory, len(rssItem.Categories))
+			for i, category := range rssItem.Categories {
+				entry.Categories[i] = &credoAtomCategory{
+					Term:   category.Value,
+					Scheme: category.Domain,
+				}
+			}
+		}
+
+		// Enclosures as links
+		if len(rssItem.Enclosures) > 0 {
+			entry.Links = make([]*credoAtomLink, len(rssItem.Enclosures))
+			for i, enclosure := range rssItem.Enclosures {
+				entry.Links[i] = &credoAtomLink{
+					Href:   enclosure.URL,
+					Rel:    "enclosure",
+					Type:   enclosure.Type,
+					Length: enclosure.Length,
+				}
+			}
+		}
+
+		meta.Item = entry
+	}
+
+	return meta
 }
