@@ -48,17 +48,25 @@ func (a *Atomstr) RegisterPrePublishHook(h NostrEventHook) {
 
 // runPrePublishHooks executes hooks sequentially, passing the event through.
 func (a *Atomstr) runPrePublishHooks(ctx context.Context, feed feedStruct, post feedPostStruct, ev *nostr.Event) (*nostr.Event, error) {
+	log.Printf("[DEBUG] Running %d pre-publish hooks for event %s", len(a.prePublishHooks), ev.ID)
 	current := ev
-	for _, h := range a.prePublishHooks {
+	for i, h := range a.prePublishHooks {
+		log.Printf("[DEBUG] Executing pre-publish hook %d", i+1)
 		updated, err := h.BeforePublish(ctx, feed, post, current)
 		if err != nil {
+			log.Printf("[ERROR] Pre-publish hook %d failed: %v", i+1, err)
 			return nil, err
 		}
 		if updated == nil {
+			log.Printf("[ERROR] Pre-publish hook %d returned nil event", i+1)
 			return nil, errors.New("hook returned nil event")
+		}
+		if updated != current {
+			log.Printf("[DEBUG] Pre-publish hook %d modified event", i+1)
 		}
 		current = updated
 	}
+	log.Printf("[DEBUG] All pre-publish hooks completed successfully")
 	return current, nil
 }
 

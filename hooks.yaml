@@ -12,7 +12,7 @@ hooks:
       type: customHook
       hookName: credoIngestArticle
       config:
-        url: https://credo-api.example.com/api/ingest/article
+        url: https://rusty-d-1.siberian-albacore.ts.net/api/ingest/article
         headers:
           X-Auth-Key: "$CREDO_BACKEND_AUTH_KEY"
 

@@ -1,12 +1,20 @@
 package main
 
 import (
-	"database/sql"
+	"bytes"
+	"context"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"time"
 
+	"database/sql"
+
 	"github.com/hashicorp/logutils"
+	"github.com/mmcdole/gofeed"
+	"github.com/mmcdole/gofeed/atom"
+	"github.com/mmcdole/gofeed/rss"
 	"github.com/nbd-wtf/go-nostr"
 )
 
@@ -87,4 +95,63 @@ func logger() {
 		Writer:   os.Stderr,
 	}
 	log.SetOutput(filter)
+}
+
+// ParseFeedWithNativeStructures parses a feed and returns both the universal gofeed.Feed
+// and the native atom.Feed or rss.Feed structures for comprehensive data access
+func ParseFeedWithNativeStructures(feedURL string, ctx context.Context) (*gofeed.Feed, *atom.Feed, *rss.Feed, error) {
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", feedURL, nil)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	req.Header.Set("User-Agent", "Gofeed/1.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, nil, nil, gofeed.HTTPError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+		}
+	}
+
+	// Read the entire response body
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	// Parse with universal parser to get translated feed
+	universalFeed, err := gofeed.NewParser().ParseString(string(bodyBytes))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	// Detect feed type and parse natively
+	var atomFeed *atom.Feed
+	var rssFeed *rss.Feed
+
+	feedType := gofeed.DetectFeedType(bytes.NewReader(bodyBytes))
+	switch feedType {
+	case gofeed.FeedTypeAtom:
+		atomParser := &atom.Parser{}
+		atomFeed, err = atomParser.Parse(bytes.NewReader(bodyBytes))
+		if err != nil {
+			log.Printf("[WARN] Failed to parse atom feed natively: %v", err)
+		}
+	case gofeed.FeedTypeRSS:
+		rssParser := &rss.Parser{}
+		rssFeed, err = rssParser.Parse(bytes.NewReader(bodyBytes))
+		if err != nil {
+			log.Printf("[WARN] Failed to parse RSS feed natively: %v", err)
+		}
+	}
+
+	return universalFeed, atomFeed, rssFeed, nil
 }

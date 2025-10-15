@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/mmcdole/gofeed"
+	"github.com/mmcdole/gofeed/atom"
+	"github.com/mmcdole/gofeed/rss"
 )
 
 var fetchInterval, _ = time.ParseDuration(getEnv("FETCH_INTERVAL", "15m"))
@@ -71,6 +73,13 @@ type feedPostStruct struct {
 	PublishedUnix int64    `json:"published_unix"`
 	Categories    []string `json:"categories"`
 	Enclosures    []string `json:"enclosures"`
+	Content       string   `json:"content,omitempty"`
+	// Comprehensive feed data - full native structures
+	AtomFeed  *atom.Feed  `json:"atomFeed,omitempty"`
+	AtomEntry *atom.Entry `json:"atomEntry,omitempty"`
+	RSSFeed   *rss.Feed   `json:"rssFeed,omitempty"`
+	RSSItem   *rss.Item   `json:"rssItem,omitempty"`
+	FeedType  string      `json:"feedType"`
 }
 
 type webIndex struct {

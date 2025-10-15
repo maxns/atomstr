@@ -12,6 +12,8 @@ import (
 
 	"github.com/microcosm-cc/bluemonday"
 	"github.com/mmcdole/gofeed"
+	"github.com/mmcdole/gofeed/atom"
+	"github.com/mmcdole/gofeed/rss"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip19"
 )
@@ -43,28 +45,45 @@ func (a *Atomstr) processFeedUrl(ch chan feedStruct, wg *sync.WaitGroup) {
 		func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // fetch feeds with 10s timeout
 			defer cancel()
-			fp := gofeed.NewParser()
-			feed, err := fp.ParseURLWithContext(feedItem.Url, ctx)
-			if err != nil {
-				log.Println("[ERROR] Can't update feed", feedItem.Url)
-			} else {
-				log.Println("[DEBUG] Updating feed ", feedItem.Url)
-				//fmt.Println(feed)
-				feedItem.Title = feed.Title
-				feedItem.Description = feed.Description
-				feedItem.Link = feed.Link
-				if feed.Image != nil {
-					feedItem.Image = feed.Image.URL
-				} else {
-					feedItem.Image = defaultFeedImage
-				}
-				//feedItem.Image = feed.Image
 
-				for i := range feed.Items {
-					a.processFeedPost(feedItem, feed.Items[i])
-				}
-				log.Println("[DEBUG] Finished updating feed ", feedItem.Url)
+			// Use comprehensive parsing to capture native feed structures
+			universalFeed, _, _, err := ParseFeedWithNativeStructures(feedItem.Url, ctx)
+			if err != nil {
+				log.Println("[ERROR] Can't update feed", feedItem.Url, err)
+				return
 			}
+
+			log.Println("[DEBUG] Updating feed ", feedItem.Url)
+			//fmt.Println(feed)
+			feedItem.Title = universalFeed.Title
+			feedItem.Description = universalFeed.Description
+			feedItem.Link = universalFeed.Link
+			if universalFeed.Image != nil {
+				feedItem.Image = universalFeed.Image.URL
+			} else {
+				feedItem.Image = defaultFeedImage
+			}
+
+			for i := range universalFeed.Items {
+				// Find corresponding native entry/item - we need to parse natively here
+				var atomEntry *atom.Entry
+				var rssItem *rss.Item
+				var nativeAtomFeed *atom.Feed
+				var nativeRssFeed *rss.Feed
+
+				// Re-parse to get native structures for this specific item
+				_, nativeAtomFeed, nativeRssFeed, _ = ParseFeedWithNativeStructures(feedItem.Url, ctx)
+
+				if nativeAtomFeed != nil && i < len(nativeAtomFeed.Entries) {
+					atomEntry = nativeAtomFeed.Entries[i]
+				}
+				if nativeRssFeed != nil && i < len(nativeRssFeed.Items) {
+					rssItem = nativeRssFeed.Items[i]
+				}
+
+				a.processFeedPost(feedItem, universalFeed.Items[i], nativeAtomFeed, atomEntry, nativeRssFeed, rssItem, universalFeed.FeedType)
+			}
+			log.Println("[DEBUG] Finished updating feed ", feedItem.Url)
 		}()
 	}
 	wg.Done()
@@ -74,7 +93,7 @@ func (a *Atomstr) processFeedUrl(ch chan feedStruct, wg *sync.WaitGroup) {
 // checks if the post should be published (based on age, duplicates, etc.), and prepares the post
 // text and tags for publishing to Nostr. It also handles inline images, links, enclosures, and
 // categories as tags.
-func (a *Atomstr) processFeedPost(feedItem feedStruct, feedPost *gofeed.Item) {
+func (a *Atomstr) processFeedPost(feedItem feedStruct, feedPost *gofeed.Item, atomFeed *atom.Feed, atomEntry *atom.Entry, rssFeed *rss.Feed, rssItem *rss.Item, feedType string) {
 	p := bluemonday.StrictPolicy() // initialize html sanitizer
 	p.AllowImages()
 	p.AllowStandardURLs()
@@ -83,9 +102,9 @@ func (a *Atomstr) processFeedPost(feedItem feedStruct, feedPost *gofeed.Item) {
 	//fmt.Println(feedPost.PublishedParsed)
 
 	// Check if we should publish this post (age, duplicates, etc.)
-	shouldPublish, reason := a.shouldPublishPost(feedItem, feedPost)
+	shouldPublish, _ := a.shouldPublishPost(feedItem, feedPost)
 	if !shouldPublish {
-		log.Println("[DEBUG] Skipping post from", feedItem.Url+":", reason)
+		// log.Println("[TRACE] Skipping post from", feedItem.Url+":", reason)
 		return
 	}
 
@@ -144,7 +163,16 @@ func (a *Atomstr) processFeedPost(feedItem feedStruct, feedPost *gofeed.Item) {
 		PublishedUnix: 0,
 		Categories:    nil,
 		Enclosures:    nil,
+		Content:       feedPost.Content,
+		// Comprehensive feed data - full native structures for backend parsing
+		AtomFeed:  atomFeed,
+		AtomEntry: atomEntry,
+		RSSFeed:   rssFeed,
+		RSSItem:   rssItem,
+		FeedType:  feedType,
 	}
+
+	// Basic field extraction for backward compatibility
 	if feedPost.PublishedParsed != nil {
 		post.Published = feedPost.Published
 		post.PublishedUnix = feedPost.PublishedParsed.Unix()
@@ -175,7 +203,7 @@ func (a *Atomstr) processFeedPost(feedItem feedStruct, feedPost *gofeed.Item) {
 
 	if !noPub {
 		publishedCount, errCount := nostrPostItem(ev)
-		log.Printf("[DEBUG] Published post to %d / %d relays\n", publishedCount, errCount+publishedCount)
+		log.Printf("[INFO] Published post to %d / %d relays\n", publishedCount, errCount+publishedCount)
 		shouldRecord = publishedCount > 0
 	} else {
 		log.Println("[DEBUG] not publishing post", ev)
@@ -292,8 +320,9 @@ func checkValidFeedSource(feedUrl string) (*feedStruct, error) {
 	log.Println("[DEBUG] Trying to find feed at", feedUrl)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	fp := gofeed.NewParser()
-	feed, err := fp.ParseURLWithContext(feedUrl, ctx)
+
+	// Use comprehensive parsing to capture native feed structures
+	universalFeed, _, _, err := ParseFeedWithNativeStructures(feedUrl, ctx)
 	feedItem := feedStruct{}
 
 	if err != nil {
@@ -302,15 +331,15 @@ func checkValidFeedSource(feedUrl string) (*feedStruct, error) {
 	}
 	// FIXME! That needs proper error handling.
 	feedItem.Url = feedUrl
-	feedItem.Title = feed.Title
-	feedItem.Description = feed.Description
-	feedItem.Link = feed.Link
-	if feed.Image != nil {
-		feedItem.Image = feed.Image.URL
+	feedItem.Title = universalFeed.Title
+	feedItem.Description = universalFeed.Description
+	feedItem.Link = universalFeed.Link
+	if universalFeed.Image != nil {
+		feedItem.Image = universalFeed.Image.URL
 	} else {
 		feedItem.Image = defaultFeedImage
 	}
-	feedItem.Posts = feed.Items
+	feedItem.Posts = universalFeed.Items
 
 	return &feedItem, err
 }
@@ -343,7 +372,8 @@ func (a *Atomstr) addSource(feedUrl string) (*feedStruct, error) {
 
 	log.Println("[INFO] Parsing post history of new feed")
 	for i := range feedItem.Posts {
-		a.processFeedPost(*feedItem, feedItem.Posts[i])
+		// We don't have native feed structures for historical processing, so pass nil
+		a.processFeedPost(*feedItem, feedItem.Posts[i], nil, nil, nil, nil, "")
 	}
 	log.Println("[INFO] Finished parsing post history of new feed")
 

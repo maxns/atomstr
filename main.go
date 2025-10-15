@@ -86,7 +86,9 @@ func main() {
 
 		// Load hooks from YAML if available
 		if cfgPath, err := findDefaultHooksConfig(); err == nil {
+			log.Printf("[INFO] Loading hooks config from %s", cfgPath)
 			if cfg, err := loadHooksConfig(cfgPath); err == nil {
+				log.Printf("[INFO] Found %d prePostNostrPublish hooks", len(cfg.Hooks.PrePostNostrPublish))
 				for _, h := range cfg.Hooks.PrePostNostrPublish {
 					switch h.Type {
 					case "restEnrich":
@@ -129,6 +131,7 @@ func main() {
 						log.Printf("[WARN] Unknown hook type '%s' for hook '%s'", h.Type, h.Name)
 					}
 				}
+				log.Printf("[INFO] Successfully loaded and registered all hooks")
 			} else {
 				log.Println("[WARN] Failed to load hooks config:", err)
 			}
