@@ -225,7 +225,7 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 
 	buf, err := json.Marshal(&reqBody)
 	if err != nil {
-		log.Printf("[ERROR] credo-ingest-article: failed to marshal request: %v", err)
+		log.Printf("[ERROR] credo-ingest-article: failed to marshal request: %v for url %s", err, feedPost.Link)
 		return event, nil // Don't fail the event publishing
 	}
 
@@ -233,7 +233,7 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.url, bytes.NewReader(buf))
 	if err != nil {
-		log.Printf("[ERROR] credo-ingest-article: failed to create request: %v", err)
+		log.Printf("[ERROR] credo-ingest-article: failed to create request: %v for url %s", err, feedPost.Link)
 		return event, nil // Don't fail the event publishing
 	}
 
@@ -242,7 +242,7 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 		if strings.HasPrefix(v, "$") {
 			val := os.Getenv(v[1:])
 			if val == "" {
-				log.Printf("[ERROR] credo-ingest-article: header specified env, but variable not found: %s", v)
+				log.Printf("[ERROR] credo-ingest-article: header specified env, but variable not found: %s for url %s", v, feedPost.Link)
 				return event, nil // Don't fail the event publishing
 			}
 			v = val
@@ -250,13 +250,13 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 		req.Header.Set(k, v)
 	}
 
-	log.Printf("[DEBUG] credo-ingest-article request: URL=%s, Title=%s, ContentLength=%d, FeedType=%s, HasAtomMeta=%v",
+	log.Printf("[DEBUG] credo-ingest-article request: url=%s, title=%s, contentLength=%d, feedType=%s, hasAtomMeta=%v",
 		feedPost.Link, feedPost.Title, len(feedPost.Content), feedPost.FeedType,
 		reqBody.AtomMeta != nil)
 
 	resp, err := h.client.Do(req)
 	if err != nil {
-		log.Printf("[ERROR] credo-ingest-article: request failed: %v", err)
+		log.Printf("[ERROR] credo-ingest-article: request failed: %v for url %s", err, feedPost.Link)
 		return event, err
 	}
 	defer resp.Body.Close()
@@ -268,7 +268,7 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 		if resp.Body != nil {
 			bodyBytes, _ := io.ReadAll(resp.Body)
 			respMsg = string(bodyBytes)
-			log.Printf("[ERROR] credo-ingest-article non-2xx response (%s): %s", resp.Status, respMsg)
+			log.Printf("[ERROR] credo-ingest-article non-2xx response (%s): %s for url %s", resp.Status, respMsg, feedPost.Link)
 		}
 		return event, errors.New("credo-ingest-article returned non-2xx status: " + resp.Status)
 	}
@@ -279,7 +279,7 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 
 	var out credoIngestArticleResponse
 	if err := json.Unmarshal(bodyBytes, &out); err != nil {
-		log.Printf("[ERROR] credo-ingest-article: failed to decode response: %v", err)
+		log.Printf("[ERROR] credo-ingest-article: failed to decode response: %v for url %s", err, feedPost.Link)
 		log.Printf("[ERROR] credo-ingest-article: raw response was: %s", string(bodyBytes))
 		return event, err
 	}
@@ -288,17 +288,17 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 	log.Printf("[DEBUG] credo-ingest-article: result - articleId: %s, features: %v", out.ArticleId, out.Features)
 
 	if !out.Success {
-		log.Printf("[ERROR] credo-ingest-article returned error: %s", out.Message)
+		log.Printf("[ERROR] credo-ingest-article returned error: %s for url %s", out.Message, feedPost.Link)
 		return event, errors.New("credo-ingest-article returned error: " + out.Message)
 	}
 
 	// Log successful processing
-	log.Printf("[DEBUG] credo-ingest-article: full response structure - articleId: %s, features: %v", out.ArticleId, out.Features)
+	log.Printf("[DEBUG] credo-ingest-article: full response structure - articleId: %s, features: %v for url %s", out.ArticleId, out.Features, feedPost.Link)
 
 	if out.ArticleId != "" {
-		log.Printf("[INFO] credo-ingest-article: article created with ID: %s", out.ArticleId)
+		log.Printf("[INFO] credo-ingest-article: article created with ID: %s for url %s", out.ArticleId, feedPost.Link)
 	} else {
-		log.Printf("[INFO] credo-ingest-article: article processed (no ID - not persisted)")
+		log.Printf("[INFO] credo-ingest-article: article processed (no ID - not persisted) for url %s", feedPost.Link)
 	}
 
 	// Extract and add topic hashtags as "t" tags from API response
@@ -333,10 +333,10 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 
 		updated.Tags = newTags
 
-		log.Printf("[INFO] credo-ingest-article: replaced event tags with %d API-provided tags", addedCount)
+		log.Printf("[INFO] credo-ingest-article: replaced event tags with %d API-provided tags for url %s", addedCount, feedPost.Link)
 		tagsAdded = true
 	} else {
-		log.Printf("[WARN] credo-ingest-article: no tags provided by API")
+		log.Printf("[WARN] credo-ingest-article: no tags provided by API for url %s", feedPost.Link)
 	}
 
 	// Add AI assist results as "alt" tags with JSON-encoded feature objects
@@ -360,13 +360,13 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 				existingAltTags["aiAssist:get-features"] = true
 				assistTagsAdded++
 			} else {
-				log.Printf("[WARN] credo-ingest-article: failed to marshal get-features: %v", err)
+				log.Printf("[WARN] credo-ingest-article: failed to marshal get-features: %v for url %s", err, feedPost.Link)
 			}
 		}
 
 		// Add unbait assist as JSON if available
 		if out.Assists.Unbait != nil {
-			log.Printf("[DEBUG] credo-ingest-article: unbait assist found - clickbaitScore: %.1f, answer: %s", out.Assists.Unbait.ClickbaitScore, out.Assists.Unbait.UnbaitAnswer)
+			log.Printf("[DEBUG] credo-ingest-article: unbait assist found - clickbaitScore: %.1f, answer: %s for url %s", out.Assists.Unbait.ClickbaitScore, out.Assists.Unbait.UnbaitAnswer, feedPost.Link)
 
 			if !existingAltTags["aiAssist:unbait"] {
 				if unbaitJSON, err := json.Marshal(out.Assists.Unbait); err == nil {
@@ -374,19 +374,19 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 					existingAltTags["aiAssist:unbait"] = true
 					assistTagsAdded++
 				} else {
-					log.Printf("[WARN] credo-ingest-article: failed to marshal unbait: %v", err)
+					log.Printf("[WARN] credo-ingest-article: failed to marshal unbait: %v for url %s", err, feedPost.Link)
 				}
 			}
 		}
 
 		if assistTagsAdded > 0 {
-			log.Printf("[INFO] credo-ingest-article: added %d AI assist tags to event", assistTagsAdded)
+			log.Printf("[INFO] credo-ingest-article: added %d AI assist tags to event for url %s", assistTagsAdded, feedPost.Link)
 			tagsAdded = true
 		}
 	}
 
 	if len(out.Features) > 0 {
-		log.Printf("[INFO] credo-ingest-article: detected features: %v", out.Features)
+		log.Printf("[INFO] credo-ingest-article: detected features: %v for url %s", out.Features, feedPost.Link)
 	}
 
 	if tagsAdded {
@@ -394,7 +394,7 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 	}
 
 	// Return original event if no tags were added
-	log.Printf("[DEBUG] credo-ingest-article: completed processing for event %s", event.ID)
+	log.Printf("[DEBUG] credo-ingest-article: completed processing for event %s for url %s", event.ID, feedPost.Link)
 	return event, nil
 }
 
