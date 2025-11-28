@@ -124,7 +124,8 @@ func main() {
 						if endpoint == "" {
 							endpoint = h.URL // allow url alias
 						}
-						a.RegisterPrePublishHook(NewCredoIngestArticleHook(endpoint, h.Headers))
+						// Legacy hook creation with default values
+						a.RegisterPrePublishHook(NewCredoIngestArticleHook(endpoint, h.Headers, 16, 3))
 						log.Println("[WARN] credoIngestArticle hook type is deprecated, use customHook instead")
 						log.Println("[INFO] Registered credoIngestArticle hook:", h.Name)
 					default:

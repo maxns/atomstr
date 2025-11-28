@@ -9,7 +9,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mmcdole/gofeed/atom"
@@ -22,19 +24,65 @@ func init() {
 	RegisterCustomHook("credoIngestArticle", NewCredoIngestArticleHookFromConfig)
 }
 
+// retryTracker is a thread-safe in-memory retry count tracker
+type retryTracker struct {
+	mu     sync.RWMutex
+	counts map[string]int
+}
+
+func newRetryTracker() *retryTracker {
+	return &retryTracker{
+		counts: make(map[string]int),
+	}
+}
+
+func (rt *retryTracker) getRetryCount(url string) int {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	return rt.counts[url]
+}
+
+func (rt *retryTracker) incrementRetryCount(url string) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	rt.counts[url]++
+}
+
+func (rt *retryTracker) clearRetryCount(url string) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	delete(rt.counts, url)
+}
+
+// truncateContent truncates content to maxContentSizeK * 1024 bytes and adds [TRUNCATED] suffix
+func (h *CredoIngestArticleHook) truncateContent(content string) string {
+	maxBytes := h.maxContentSizeK * 1024
+	if len(content) <= maxBytes {
+		return content
+	}
+	truncated := content[:maxBytes]
+	return truncated + "[TRUNCATED]"
+}
+
 // CredoIngestArticleHook calls the Credo API to ingest articles for AI analysis
 // It extracts article content from Nostr events and sends it to the Credo API
 type CredoIngestArticleHook struct {
-	url     string
-	headers map[string]string
-	client  *http.Client
+	url             string
+	headers         map[string]string
+	client          *http.Client
+	retryTracker    *retryTracker
+	maxContentSizeK int
+	retryLimit      int
 }
 
-func NewCredoIngestArticleHook(endpoint string, headers map[string]string) *CredoIngestArticleHook {
+func NewCredoIngestArticleHook(endpoint string, headers map[string]string, maxContentSizeK int, retryLimit int) *CredoIngestArticleHook {
 	return &CredoIngestArticleHook{
-		url:     endpoint,
-		headers: headers,
-		client:  &http.Client{Timeout: 30 * time.Second}, // Longer timeout for AI processing
+		url:             endpoint,
+		headers:         headers,
+		client:          &http.Client{Timeout: 30 * time.Second}, // Longer timeout for AI processing
+		retryTracker:    newRetryTracker(),
+		maxContentSizeK: maxContentSizeK,
+		retryLimit:      retryLimit,
 	}
 }
 
@@ -58,7 +106,37 @@ func NewCredoIngestArticleHookFromConfig(config map[string]interface{}) (NostrEv
 		}
 	}
 
-	return NewCredoIngestArticleHook(url, headers), nil
+	// Extract maxContentSizeK (default: 16)
+	maxContentSizeK := 16
+	if maxContentSizeKRaw, exists := config["maxContentSizeK"]; exists {
+		switch v := maxContentSizeKRaw.(type) {
+		case int:
+			maxContentSizeK = v
+		case float64:
+			maxContentSizeK = int(v)
+		case string:
+			if parsed, err := strconv.Atoi(v); err == nil {
+				maxContentSizeK = parsed
+			}
+		}
+	}
+
+	// Extract retryLimit (default: 3)
+	retryLimit := 3
+	if retryLimitRaw, exists := config["retryLimit"]; exists {
+		switch v := retryLimitRaw.(type) {
+		case int:
+			retryLimit = v
+		case float64:
+			retryLimit = int(v)
+		case string:
+			if parsed, err := strconv.Atoi(v); err == nil {
+				retryLimit = parsed
+			}
+		}
+	}
+
+	return NewCredoIngestArticleHook(url, headers, maxContentSizeK, retryLimit), nil
 }
 
 // CredoIngestArticleRequest per API specification
@@ -205,11 +283,28 @@ type credoIngestArticleResponse struct {
 func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStruct, feedPost feedPostStruct, event *nostr.Event) (*nostr.Event, error) {
 	log.Printf("[DEBUG] credo-ingest-article: processing event %s with content length %d", event.ID, len(event.Content))
 
+	// Check retry count before attempting analysis
+	retryCount := h.retryTracker.getRetryCount(feedPost.Link)
+	if retryCount >= h.retryLimit {
+		log.Printf("[WARN] credo-ingest-article: skipping analysis for url %s - retry count %d exceeds limit %d", feedPost.Link, retryCount, h.retryLimit)
+		return event, nil // Return original event without analysis
+	}
+
 	// Build request with raw atom feed data for backend parsing
 	reqBody := credoIngestArticleRequest{}
 	reqBody.URL = feedPost.Link
 	reqBody.Title = feedPost.Title
-	reqBody.Content = feedPost.Content // Use actual content if available
+
+	// Truncate content if it exceeds maxContentSizeK
+	content := feedPost.Content
+	if h.maxContentSizeK > 0 {
+		originalLength := len(content)
+		content = h.truncateContent(content)
+		if len(content) < originalLength {
+			log.Printf("[INFO] credo-ingest-article: truncated content from %d to %d bytes for url %s", originalLength, len(content), feedPost.Link)
+		}
+	}
+	reqBody.Content = content
 	reqBody.Excerpt = feedPost.Description
 	reqBody.Language = "en" // Default to English
 	reqBody.GUID = feedPost.GUID
@@ -257,6 +352,8 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 	resp, err := h.client.Do(req)
 	if err != nil {
 		log.Printf("[ERROR] credo-ingest-article: request failed: %v for url %s", err, feedPost.Link)
+		// Increment retry count on failure
+		h.retryTracker.incrementRetryCount(feedPost.Link)
 		return event, err
 	}
 	defer resp.Body.Close()
@@ -270,6 +367,8 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 			respMsg = string(bodyBytes)
 			log.Printf("[ERROR] credo-ingest-article non-2xx response (%s): %s for url %s", resp.Status, respMsg, feedPost.Link)
 		}
+		// Increment retry count on failure
+		h.retryTracker.incrementRetryCount(feedPost.Link)
 		return event, errors.New("credo-ingest-article returned non-2xx status: " + resp.Status)
 	}
 
@@ -281,6 +380,8 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 	if err := json.Unmarshal(bodyBytes, &out); err != nil {
 		log.Printf("[ERROR] credo-ingest-article: failed to decode response: %v for url %s", err, feedPost.Link)
 		log.Printf("[ERROR] credo-ingest-article: raw response was: %s", string(bodyBytes))
+		// Increment retry count on failure
+		h.retryTracker.incrementRetryCount(feedPost.Link)
 		return event, err
 	}
 
@@ -289,8 +390,13 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 
 	if !out.Success {
 		log.Printf("[ERROR] credo-ingest-article returned error: %s for url %s", out.Message, feedPost.Link)
+		// Increment retry count on failure
+		h.retryTracker.incrementRetryCount(feedPost.Link)
 		return event, errors.New("credo-ingest-article returned error: " + out.Message)
 	}
+
+	// Reset retry count on success
+	h.retryTracker.clearRetryCount(feedPost.Link)
 
 	// Log successful processing
 	log.Printf("[DEBUG] credo-ingest-article: full response structure - articleId: %s, features: %v for url %s", out.ArticleId, out.Features, feedPost.Link)
