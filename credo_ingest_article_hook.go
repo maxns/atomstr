@@ -64,6 +64,14 @@ func (h *CredoIngestArticleHook) truncateContent(content string) string {
 	return truncated + "[TRUNCATED]"
 }
 
+// truncateString truncates a string to maxLen characters
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen]
+}
+
 // CredoIngestArticleHook calls the Credo API to ingest articles for AI analysis
 // It extracts article content from Nostr events and sends it to the Credo API
 type CredoIngestArticleHook struct {
@@ -285,6 +293,7 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 
 	// Check retry count before attempting analysis
 	retryCount := h.retryTracker.getRetryCount(feedPost.Link)
+	log.Printf("[DEBUG] credo-ingest-article: retry count for url %s is %d (limit: %d)", feedPost.Link, retryCount, h.retryLimit)
 	if retryCount >= h.retryLimit {
 		log.Printf("[WARN] credo-ingest-article: skipping analysis for url %s - retry count %d exceeds limit %d", feedPost.Link, retryCount, h.retryLimit)
 		return event, nil // Return original event without analysis
@@ -292,8 +301,12 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 
 	// Build request with raw atom feed data for backend parsing
 	reqBody := credoIngestArticleRequest{}
-	reqBody.URL = feedPost.Link
-	reqBody.Title = feedPost.Title
+
+	// Truncate URL, Title, GUID to 512 chars max
+	reqBody.URL = truncateString(feedPost.Link, 512)
+	reqBody.Title = truncateString(feedPost.Title, 512)
+	reqBody.GUID = truncateString(feedPost.GUID, 512)
+	reqBody.Language = "en" // Default to English (already short)
 
 	// Truncate content if it exceeds maxContentSizeK
 	content := feedPost.Content
@@ -305,9 +318,18 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 		}
 	}
 	reqBody.Content = content
-	reqBody.Excerpt = feedPost.Description
-	reqBody.Language = "en" // Default to English
-	reqBody.GUID = feedPost.GUID
+
+	// Truncate excerpt to same limit as content (maxContentSizeK * 1024)
+	excerpt := feedPost.Description
+	if h.maxContentSizeK > 0 {
+		maxExcerptBytes := h.maxContentSizeK * 1024
+		if len(excerpt) > maxExcerptBytes {
+			originalLength := len(excerpt)
+			excerpt = truncateString(excerpt, maxExcerptBytes)
+			log.Printf("[INFO] credo-ingest-article: truncated excerpt from %d to %d bytes for url %s", originalLength, len(excerpt), feedPost.Link)
+		}
+	}
+	reqBody.Excerpt = excerpt
 
 	// Build comprehensive atomMeta structure from native feed data
 	// Let the backend parse and extract enhanced fields from this raw data
@@ -323,6 +345,11 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 		log.Printf("[ERROR] credo-ingest-article: failed to marshal request: %v for url %s", err, feedPost.Link)
 		return event, nil // Don't fail the event publishing
 	}
+
+	// Log request size to help debug entity too large errors
+	requestSize := len(buf)
+	log.Printf("[DEBUG] credo-ingest-article: request size: %d bytes (content: %d bytes, excerpt: %d bytes, atomMeta present: %v) for url %s",
+		requestSize, len(reqBody.Content), len(reqBody.Excerpt), reqBody.AtomMeta != nil, feedPost.Link)
 
 	log.Printf("[DEBUG] credo-ingest-article: sending request JSON: %s", string(buf))
 
@@ -354,6 +381,15 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 		log.Printf("[ERROR] credo-ingest-article: request failed: %v for url %s", err, feedPost.Link)
 		// Increment retry count on failure
 		h.retryTracker.incrementRetryCount(feedPost.Link)
+
+		// Check if we've exceeded retry limit
+		retryCount := h.retryTracker.getRetryCount(feedPost.Link)
+		if retryCount >= h.retryLimit {
+			log.Printf("[WARN] credo-ingest-article: skipping analysis for url %s - retry count %d exceeds limit %d", feedPost.Link, retryCount, h.retryLimit)
+			// Return event without error to allow publishing to continue
+			return event, nil
+		}
+
 		return event, err
 	}
 	defer resp.Body.Close()
@@ -367,8 +403,29 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 			respMsg = string(bodyBytes)
 			log.Printf("[ERROR] credo-ingest-article non-2xx response (%s): %s for url %s", resp.Status, respMsg, feedPost.Link)
 		}
+
+		// Check if this is a "request entity too large" error - treat as permanent failure
+		if resp.StatusCode == 500 && strings.Contains(strings.ToLower(respMsg), "request entity too large") {
+			log.Printf("[WARN] credo-ingest-article: skipping permanently - request entity too large for url %s", feedPost.Link)
+			// Mark as permanently failed by setting retry count to max
+			for i := 0; i < h.retryLimit; i++ {
+				h.retryTracker.incrementRetryCount(feedPost.Link)
+			}
+			// Return event without error to allow publishing to continue
+			return event, nil
+		}
+
 		// Increment retry count on failure
 		h.retryTracker.incrementRetryCount(feedPost.Link)
+
+		// Check if we've exceeded retry limit
+		retryCount := h.retryTracker.getRetryCount(feedPost.Link)
+		if retryCount >= h.retryLimit {
+			log.Printf("[WARN] credo-ingest-article: skipping analysis for url %s - retry count %d exceeds limit %d", feedPost.Link, retryCount, h.retryLimit)
+			// Return event without error to allow publishing to continue
+			return event, nil
+		}
+
 		return event, errors.New("credo-ingest-article returned non-2xx status: " + resp.Status)
 	}
 
@@ -382,6 +439,15 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 		log.Printf("[ERROR] credo-ingest-article: raw response was: %s", string(bodyBytes))
 		// Increment retry count on failure
 		h.retryTracker.incrementRetryCount(feedPost.Link)
+
+		// Check if we've exceeded retry limit
+		retryCount := h.retryTracker.getRetryCount(feedPost.Link)
+		if retryCount >= h.retryLimit {
+			log.Printf("[WARN] credo-ingest-article: skipping analysis for url %s - retry count %d exceeds limit %d", feedPost.Link, retryCount, h.retryLimit)
+			// Return event without error to allow publishing to continue
+			return event, nil
+		}
+
 		return event, err
 	}
 
@@ -392,6 +458,15 @@ func (h *CredoIngestArticleHook) BeforePublish(ctx context.Context, feed feedStr
 		log.Printf("[ERROR] credo-ingest-article returned error: %s for url %s", out.Message, feedPost.Link)
 		// Increment retry count on failure
 		h.retryTracker.incrementRetryCount(feedPost.Link)
+
+		// Check if we've exceeded retry limit
+		retryCount := h.retryTracker.getRetryCount(feedPost.Link)
+		if retryCount >= h.retryLimit {
+			log.Printf("[WARN] credo-ingest-article: skipping analysis for url %s - retry count %d exceeds limit %d", feedPost.Link, retryCount, h.retryLimit)
+			// Return event without error to allow publishing to continue
+			return event, nil
+		}
+
 		return event, errors.New("credo-ingest-article returned error: " + out.Message)
 	}
 
@@ -511,18 +586,18 @@ func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
 	// Build feed structure
 	if atomFeed != nil {
 		feed := &credoAtomFeed{
-			ID:       atomFeed.ID,
-			Updated:  atomFeed.Updated,
-			Language: atomFeed.Language,
-			Icon:     atomFeed.Icon,
-			Logo:     atomFeed.Logo,
+			ID:       truncateString(atomFeed.ID, 512),
+			Updated:  truncateString(atomFeed.Updated, 512),
+			Language: truncateString(atomFeed.Language, 512),
+			Icon:     truncateString(atomFeed.Icon, 512),
+			Logo:     truncateString(atomFeed.Logo, 512),
 		}
 
 		// Title
 		if atomFeed.Title != "" {
 			feed.Title = &credoAtomText{
 				Type:  "text",
-				Value: atomFeed.Title,
+				Value: truncateString(atomFeed.Title, 512),
 			}
 		}
 
@@ -530,7 +605,7 @@ func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
 		if atomFeed.Subtitle != "" {
 			feed.Subtitle = &credoAtomText{
 				Type:  "text",
-				Value: atomFeed.Subtitle,
+				Value: truncateString(atomFeed.Subtitle, 512),
 			}
 		}
 
@@ -538,16 +613,16 @@ func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
 		if atomFeed.Rights != "" {
 			feed.Rights = &credoAtomText{
 				Type:  "text",
-				Value: atomFeed.Rights,
+				Value: truncateString(atomFeed.Rights, 512),
 			}
 		}
 
 		// Generator
 		if atomFeed.Generator != nil {
 			feed.Generator = &credoAtomGenerator{
-				Value:   atomFeed.Generator.Value,
-				URI:     atomFeed.Generator.URI,
-				Version: atomFeed.Generator.Version,
+				Value:   truncateString(atomFeed.Generator.Value, 512),
+				URI:     truncateString(atomFeed.Generator.URI, 512),
+				Version: truncateString(atomFeed.Generator.Version, 512),
 			}
 		}
 
@@ -556,12 +631,12 @@ func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
 			feed.Links = make([]*credoAtomLink, len(atomFeed.Links))
 			for i, link := range atomFeed.Links {
 				feed.Links[i] = &credoAtomLink{
-					Href:     link.Href,
-					Rel:      link.Rel,
-					Type:     link.Type,
-					Hreflang: link.Hreflang,
-					Title:    link.Title,
-					Length:   link.Length,
+					Href:     truncateString(link.Href, 512),
+					Rel:      truncateString(link.Rel, 512),
+					Type:     truncateString(link.Type, 512),
+					Hreflang: truncateString(link.Hreflang, 512),
+					Title:    truncateString(link.Title, 512),
+					Length:   truncateString(link.Length, 512),
 				}
 			}
 		}
@@ -571,9 +646,9 @@ func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
 			feed.Authors = make([]*credoAtomPerson, len(atomFeed.Authors))
 			for i, author := range atomFeed.Authors {
 				feed.Authors[i] = &credoAtomPerson{
-					Name:  author.Name,
-					Email: author.Email,
-					URI:   author.URI,
+					Name:  truncateString(author.Name, 512),
+					Email: truncateString(author.Email, 512),
+					URI:   truncateString(author.URI, 512),
 				}
 			}
 		}
@@ -583,9 +658,9 @@ func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
 			feed.Contributors = make([]*credoAtomPerson, len(atomFeed.Contributors))
 			for i, contributor := range atomFeed.Contributors {
 				feed.Contributors[i] = &credoAtomPerson{
-					Name:  contributor.Name,
-					Email: contributor.Email,
-					URI:   contributor.URI,
+					Name:  truncateString(contributor.Name, 512),
+					Email: truncateString(contributor.Email, 512),
+					URI:   truncateString(contributor.URI, 512),
 				}
 			}
 		}
@@ -595,9 +670,9 @@ func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
 			feed.Categories = make([]*credoAtomCategory, len(atomFeed.Categories))
 			for i, category := range atomFeed.Categories {
 				feed.Categories[i] = &credoAtomCategory{
-					Term:   category.Term,
-					Scheme: category.Scheme,
-					Label:  category.Label,
+					Term:   truncateString(category.Term, 512),
+					Scheme: truncateString(category.Scheme, 512),
+					Label:  truncateString(category.Label, 512),
 				}
 			}
 		}
@@ -608,16 +683,16 @@ func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
 	// Build entry structure
 	if atomEntry != nil {
 		entry := &credoAtomEntry{
-			ID:        atomEntry.ID,
-			Updated:   atomEntry.Updated,
-			Published: atomEntry.Published,
+			ID:        truncateString(atomEntry.ID, 512),
+			Updated:   truncateString(atomEntry.Updated, 512),
+			Published: truncateString(atomEntry.Published, 512),
 		}
 
 		// Title
 		if atomEntry.Title != "" {
 			entry.Title = &credoAtomText{
 				Type:  "text",
-				Value: atomEntry.Title,
+				Value: truncateString(atomEntry.Title, 512),
 			}
 		}
 
@@ -625,7 +700,7 @@ func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
 		if atomEntry.Summary != "" {
 			entry.Summary = &credoAtomText{
 				Type:  "text",
-				Value: atomEntry.Summary,
+				Value: truncateString(atomEntry.Summary, 512),
 			}
 		}
 
@@ -633,7 +708,7 @@ func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
 		if atomEntry.Rights != "" {
 			entry.Rights = &credoAtomText{
 				Type:  "text",
-				Value: atomEntry.Rights,
+				Value: truncateString(atomEntry.Rights, 512),
 			}
 		}
 
@@ -641,12 +716,12 @@ func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
 		if atomEntry.Content != nil {
 			contentType := "text"
 			if atomEntry.Content.Type != "" {
-				contentType = atomEntry.Content.Type
+				contentType = truncateString(atomEntry.Content.Type, 512)
 			}
 			entry.Content = &credoAtomContent{
 				Type:  contentType,
-				Value: atomEntry.Content.Value,
-				Src:   atomEntry.Content.Src,
+				Value: truncateString(atomEntry.Content.Value, 512),
+				Src:   truncateString(atomEntry.Content.Src, 512),
 			}
 		}
 
@@ -655,9 +730,9 @@ func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
 			entry.Authors = make([]*credoAtomPerson, len(atomEntry.Authors))
 			for i, author := range atomEntry.Authors {
 				entry.Authors[i] = &credoAtomPerson{
-					Name:  author.Name,
-					Email: author.Email,
-					URI:   author.URI,
+					Name:  truncateString(author.Name, 512),
+					Email: truncateString(author.Email, 512),
+					URI:   truncateString(author.URI, 512),
 				}
 			}
 		}
@@ -667,9 +742,9 @@ func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
 			entry.Contributors = make([]*credoAtomPerson, len(atomEntry.Contributors))
 			for i, contributor := range atomEntry.Contributors {
 				entry.Contributors[i] = &credoAtomPerson{
-					Name:  contributor.Name,
-					Email: contributor.Email,
-					URI:   contributor.URI,
+					Name:  truncateString(contributor.Name, 512),
+					Email: truncateString(contributor.Email, 512),
+					URI:   truncateString(contributor.URI, 512),
 				}
 			}
 		}
@@ -679,9 +754,9 @@ func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
 			entry.Categories = make([]*credoAtomCategory, len(atomEntry.Categories))
 			for i, category := range atomEntry.Categories {
 				entry.Categories[i] = &credoAtomCategory{
-					Term:   category.Term,
-					Scheme: category.Scheme,
-					Label:  category.Label,
+					Term:   truncateString(category.Term, 512),
+					Scheme: truncateString(category.Scheme, 512),
+					Label:  truncateString(category.Label, 512),
 				}
 			}
 		}
@@ -691,12 +766,12 @@ func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
 			entry.Links = make([]*credoAtomLink, len(atomEntry.Links))
 			for i, link := range atomEntry.Links {
 				entry.Links[i] = &credoAtomLink{
-					Href:     link.Href,
-					Rel:      link.Rel,
-					Type:     link.Type,
-					Hreflang: link.Hreflang,
-					Title:    link.Title,
-					Length:   link.Length,
+					Href:     truncateString(link.Href, 512),
+					Rel:      truncateString(link.Rel, 512),
+					Type:     truncateString(link.Type, 512),
+					Hreflang: truncateString(link.Hreflang, 512),
+					Title:    truncateString(link.Title, 512),
+					Length:   truncateString(link.Length, 512),
 				}
 			}
 		}
@@ -704,38 +779,38 @@ func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
 		// Source
 		if atomEntry.Source != nil {
 			source := &credoAtomSource{
-				ID:      atomEntry.Source.ID,
-				Updated: atomEntry.Source.Updated,
-				Icon:    atomEntry.Source.Icon,
-				Logo:    atomEntry.Source.Logo,
+				ID:      truncateString(atomEntry.Source.ID, 512),
+				Updated: truncateString(atomEntry.Source.Updated, 512),
+				Icon:    truncateString(atomEntry.Source.Icon, 512),
+				Logo:    truncateString(atomEntry.Source.Logo, 512),
 			}
 
 			if atomEntry.Source.Title != "" {
 				source.Title = &credoAtomText{
 					Type:  "text",
-					Value: atomEntry.Source.Title,
+					Value: truncateString(atomEntry.Source.Title, 512),
 				}
 			}
 
 			if atomEntry.Source.Subtitle != "" {
 				source.Subtitle = &credoAtomText{
 					Type:  "text",
-					Value: atomEntry.Source.Subtitle,
+					Value: truncateString(atomEntry.Source.Subtitle, 512),
 				}
 			}
 
 			if atomEntry.Source.Rights != "" {
 				source.Rights = &credoAtomText{
 					Type:  "text",
-					Value: atomEntry.Source.Rights,
+					Value: truncateString(atomEntry.Source.Rights, 512),
 				}
 			}
 
 			if atomEntry.Source.Generator != nil {
 				source.Generator = &credoAtomGenerator{
-					Value:   atomEntry.Source.Generator.Value,
-					URI:     atomEntry.Source.Generator.URI,
-					Version: atomEntry.Source.Generator.Version,
+					Value:   truncateString(atomEntry.Source.Generator.Value, 512),
+					URI:     truncateString(atomEntry.Source.Generator.URI, 512),
+					Version: truncateString(atomEntry.Source.Generator.Version, 512),
 				}
 			}
 
@@ -743,12 +818,12 @@ func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
 				source.Links = make([]*credoAtomLink, len(atomEntry.Source.Links))
 				for i, link := range atomEntry.Source.Links {
 					source.Links[i] = &credoAtomLink{
-						Href:     link.Href,
-						Rel:      link.Rel,
-						Type:     link.Type,
-						Hreflang: link.Hreflang,
-						Title:    link.Title,
-						Length:   link.Length,
+						Href:     truncateString(link.Href, 512),
+						Rel:      truncateString(link.Rel, 512),
+						Type:     truncateString(link.Type, 512),
+						Hreflang: truncateString(link.Hreflang, 512),
+						Title:    truncateString(link.Title, 512),
+						Length:   truncateString(link.Length, 512),
 					}
 				}
 			}
@@ -757,9 +832,9 @@ func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
 				source.Authors = make([]*credoAtomPerson, len(atomEntry.Source.Authors))
 				for i, author := range atomEntry.Source.Authors {
 					source.Authors[i] = &credoAtomPerson{
-						Name:  author.Name,
-						Email: author.Email,
-						URI:   author.URI,
+						Name:  truncateString(author.Name, 512),
+						Email: truncateString(author.Email, 512),
+						URI:   truncateString(author.URI, 512),
 					}
 				}
 			}
@@ -768,9 +843,9 @@ func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
 				source.Contributors = make([]*credoAtomPerson, len(atomEntry.Source.Contributors))
 				for i, contributor := range atomEntry.Source.Contributors {
 					source.Contributors[i] = &credoAtomPerson{
-						Name:  contributor.Name,
-						Email: contributor.Email,
-						URI:   contributor.URI,
+						Name:  truncateString(contributor.Name, 512),
+						Email: truncateString(contributor.Email, 512),
+						URI:   truncateString(contributor.URI, 512),
 					}
 				}
 			}
@@ -779,9 +854,9 @@ func buildAtomMeta(atomFeed *atom.Feed, atomEntry *atom.Entry) *credoAtomMeta {
 				source.Categories = make([]*credoAtomCategory, len(atomEntry.Source.Categories))
 				for i, category := range atomEntry.Source.Categories {
 					source.Categories[i] = &credoAtomCategory{
-						Term:   category.Term,
-						Scheme: category.Scheme,
-						Label:  category.Label,
+						Term:   truncateString(category.Term, 512),
+						Scheme: truncateString(category.Scheme, 512),
+						Label:  truncateString(category.Label, 512),
 					}
 				}
 			}
@@ -802,16 +877,16 @@ func buildAtomMetaFromRSS(rssFeed *rss.Feed, rssItem *rss.Item) *credoAtomMeta {
 	// Build feed structure from RSS
 	if rssFeed != nil {
 		feed := &credoAtomFeed{
-			ID:       rssFeed.Link,
-			Updated:  rssFeed.LastBuildDate,
-			Language: rssFeed.Language,
+			ID:       truncateString(rssFeed.Link, 512),
+			Updated:  truncateString(rssFeed.LastBuildDate, 512),
+			Language: truncateString(rssFeed.Language, 512),
 		}
 
 		// Title
 		if rssFeed.Title != "" {
 			feed.Title = &credoAtomText{
 				Type:  "text",
-				Value: rssFeed.Title,
+				Value: truncateString(rssFeed.Title, 512),
 			}
 		}
 
@@ -819,14 +894,14 @@ func buildAtomMetaFromRSS(rssFeed *rss.Feed, rssItem *rss.Item) *credoAtomMeta {
 		if rssFeed.Description != "" {
 			feed.Subtitle = &credoAtomText{
 				Type:  "text",
-				Value: rssFeed.Description,
+				Value: truncateString(rssFeed.Description, 512),
 			}
 		}
 
 		// Generator
 		if rssFeed.Generator != "" {
 			feed.Generator = &credoAtomGenerator{
-				Value: rssFeed.Generator,
+				Value: truncateString(rssFeed.Generator, 512),
 			}
 		}
 
@@ -835,15 +910,15 @@ func buildAtomMetaFromRSS(rssFeed *rss.Feed, rssItem *rss.Item) *credoAtomMeta {
 			feed.Categories = make([]*credoAtomCategory, len(rssFeed.Categories))
 			for i, category := range rssFeed.Categories {
 				feed.Categories[i] = &credoAtomCategory{
-					Term:   category.Value,
-					Scheme: category.Domain,
+					Term:   truncateString(category.Value, 512),
+					Scheme: truncateString(category.Domain, 512),
 				}
 			}
 		}
 
 		// Image as logo
 		if rssFeed.Image != nil {
-			feed.Logo = rssFeed.Image.URL
+			feed.Logo = truncateString(rssFeed.Image.URL, 512)
 		}
 
 		meta.Feed = feed
@@ -852,15 +927,15 @@ func buildAtomMetaFromRSS(rssFeed *rss.Feed, rssItem *rss.Item) *credoAtomMeta {
 	// Build entry structure from RSS item
 	if rssItem != nil {
 		entry := &credoAtomEntry{
-			ID:      rssItem.Link,
-			Updated: rssItem.PubDate,
+			ID:      truncateString(rssItem.Link, 512),
+			Updated: truncateString(rssItem.PubDate, 512),
 		}
 
 		// Title
 		if rssItem.Title != "" {
 			entry.Title = &credoAtomText{
 				Type:  "text",
-				Value: rssItem.Title,
+				Value: truncateString(rssItem.Title, 512),
 			}
 		}
 
@@ -868,7 +943,7 @@ func buildAtomMetaFromRSS(rssFeed *rss.Feed, rssItem *rss.Item) *credoAtomMeta {
 		if rssItem.Description != "" {
 			entry.Summary = &credoAtomText{
 				Type:  "text",
-				Value: rssItem.Description,
+				Value: truncateString(rssItem.Description, 512),
 			}
 		}
 
@@ -876,7 +951,7 @@ func buildAtomMetaFromRSS(rssFeed *rss.Feed, rssItem *rss.Item) *credoAtomMeta {
 		if rssItem.Content != "" {
 			entry.Content = &credoAtomContent{
 				Type:  "text",
-				Value: rssItem.Content,
+				Value: truncateString(rssItem.Content, 512),
 			}
 		}
 
@@ -884,7 +959,7 @@ func buildAtomMetaFromRSS(rssFeed *rss.Feed, rssItem *rss.Item) *credoAtomMeta {
 		if rssItem.Author != "" {
 			entry.Authors = []*credoAtomPerson{
 				{
-					Name: rssItem.Author,
+					Name: truncateString(rssItem.Author, 512),
 				},
 			}
 		}
@@ -894,8 +969,8 @@ func buildAtomMetaFromRSS(rssFeed *rss.Feed, rssItem *rss.Item) *credoAtomMeta {
 			entry.Categories = make([]*credoAtomCategory, len(rssItem.Categories))
 			for i, category := range rssItem.Categories {
 				entry.Categories[i] = &credoAtomCategory{
-					Term:   category.Value,
-					Scheme: category.Domain,
+					Term:   truncateString(category.Value, 512),
+					Scheme: truncateString(category.Domain, 512),
 				}
 			}
 		}
@@ -905,10 +980,10 @@ func buildAtomMetaFromRSS(rssFeed *rss.Feed, rssItem *rss.Item) *credoAtomMeta {
 			entry.Links = make([]*credoAtomLink, len(rssItem.Enclosures))
 			for i, enclosure := range rssItem.Enclosures {
 				entry.Links[i] = &credoAtomLink{
-					Href:   enclosure.URL,
+					Href:   truncateString(enclosure.URL, 512),
 					Rel:    "enclosure",
-					Type:   enclosure.Type,
-					Length: enclosure.Length,
+					Type:   truncateString(enclosure.Type, 512),
+					Length: truncateString(enclosure.Length, 512),
 				}
 			}
 		}
